@@ -12,7 +12,7 @@ Models left alone tend to grab one idea, chase it down a rabbit hole, and lose t
 
 ## Quick start
 
-You need **Node.js 24 or newer** and at least one signed-in backend: Claude Code, the Codex CLI, the Devin CLI (its `swe-2` models were free at the time of writing), or any OpenAI-compatible endpoint such as a local Ollama.
+You need **Node.js 24 or newer** and at least one signed-in backend: Claude Code, the Codex CLI, the Devin CLI (its `swe-2` models were free as of November 2026), or any OpenAI-compatible endpoint such as a local Ollama.
 
 ```bash
 git clone https://github.com/OnlyTerp/adhd.git
@@ -50,7 +50,7 @@ The thinkers and the tracker run on **backends**. Pick any model the catalog off
 | --- | --- | --- | --- | --- | --- |
 | `codex` | Every model your Codex catalog offers, for example `gpt-6-astra`, `gpt-6.1-terra` | Your ChatGPT login | attested by the app-server | reads plan usage; stops before purchased credits | plan |
 | `claude` | `claude-opus-5-5`, `claude-sonnet-5-5` | Your Claude subscription in Claude Code | attested per turn | stops on Claude extra usage or a reached limit | plan |
-| `devin` | `swe-2`, `swe-2-flash` | Your Devin CLI login | tool-less agent; any tool use fails the turn | token counts | free at the time of writing |
+| `devin` | `swe-2`, `swe-2-flash` | Your Devin CLI login | tool-less agent; any tool use fails the turn | token counts | free as of November 2026 |
 | `openai:<name>` | Whatever your endpoint serves | API key from an environment variable | plain completions, no tools sent | `maxTokens` required for per-token billing | yours |
 
 `openai:<name>` covers any OpenAI-compatible endpoint: Ollama, LM Studio, vLLM, llama.cpp, OpenRouter and provider gateways. List them in `~/.adhd/data/endpoints.json` (or point `GOAL_LOOP_ENDPOINTS` at a file):
@@ -118,7 +118,7 @@ A research loop runs for hours, so a mistake can cost real money. ADHD guards ev
 Register the server in your agent app, then copy `skill/adhd/` into its skills folder (for example `~/.claude/skills/adhd` or `~/.codex/skills/adhd`). The skill teaches the agent the workflow: read the catalog, choose models, start, open the live page, feed evidence, stop.
 
 ```bash
-claude mcp add adhd -- node /path/to/adhd/native/mcp.mjs
+claude mcp add -s user adhd -- node /path/to/adhd/native/mcp.mjs
 codex mcp add adhd -- node /path/to/adhd/native/mcp.mjs
 ```
 
@@ -140,9 +140,10 @@ The owning agent runs tests and retrieval itself, then submits the results as ev
 
 - Workers get no tools. Codex and Claude attest that; the Devin profile launches its tool-less agent and fails any turn that tries a tool. That is not proof that every host feature is excluded.
 - Only the `codex`, `claude` and `devin` backends have run live, and live runs so far were on Windows. The test suite runs on Linux, macOS and Windows in CI. The OpenAI-compatible backend is tested against a local fake server only.
+- The skill has so far been driven live from Claude Code only. Other MCP apps register the same server; their runs are untested.
 - The harness that drives ADHD cannot lend it its own model: ADHD runs models it can start itself.
 - Timing metrics measure this controller, not provider inference speed or cost.
-- ADHD does not check prices. The `devin` backend is labelled free because the `swe-2` models were free when it was written; check Devin's current pricing.
+- ADHD does not check prices. The `devin` backend is labelled free because the `swe-2` models were free as of November 2026; check Devin's current pricing.
 - Claude effort is requested, not reported back by the CLI. Devin and many endpoints cannot set effort at all. Claude reports the model at the first turn, so a mismatch fails that turn after inference has started.
 - The big-picture guard is a prompt instruction to the thinker and tracker. The tests check that every round carries it, not how well a model follows it.
 - A slow tracker never holds up the thinker, but its notes arrive less often and refer to older rounds.
@@ -162,3 +163,7 @@ node scripts/verify-native-continuous.mjs ./verify-out
 ```
 
 Measured on 2026-11-16 with that configuration: 8 Opus rounds in 8 minutes 14 seconds, one Sonnet note per round (16 to 38 seconds each), 73% of input tokens served from cache, and a gap of at most 5 ms between rounds. The run checks that a tracker note reaches a later round, so give it at least 6 rounds. With Devin `swe-2` as thinker and tracker, 6 rounds took 46 seconds.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 OnlyTerp.
