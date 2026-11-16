@@ -16,6 +16,15 @@ export const CLAUDE_MODELS = [
   {id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5'},
 ];
 export const isClaudeModel = id => typeof id === 'string' && id.startsWith('claude-');
+export const CLAUDE_EFFORTS = ['max', 'high', 'medium', 'low'];
+export const CLAUDE_CAPABILITIES = {toolFree: 'attested', usageMeter: 'plan', billing: 'subscription', structuredOutput: 'native', compaction: 'reported'};
+// Claude Code reports plan state as rate_limit_event. utilization may be a fraction or a percent.
+export function claudeRateLimits(info = {}) {
+  const u = typeof info.utilization === 'number' ? (info.utilization <= 1 ? info.utilization * 100 : info.utilization) : null;
+  const overage = info.isUsingOverage === true || info.overageInUse === true;
+  return {limitId: 'claude:' + (info.rateLimitType ?? 'plan'), primary: {usedPercent: info.status === 'rejected' ? 100 : u}, resetsAt: info.resetsAt ?? null,
+    rateLimitReachedType: info.status === 'rejected' ? 'rejected' : overage ? 'overage' : null};
+}
 
 const FRAME_LIMIT = 8 * 1024 * 1024;
 // Credentials and provider switches that would move billing off the subscription
@@ -53,7 +62,7 @@ class ClaudeThread {
     this.schema = outputSchema ? JSON.stringify(outputSchema) : null;
     this.turn = null; this.closed = false; this.released = false; this.init = null; this.stderr = '';
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-      '--include-partial-messages', '--model', selection.modelId, '--effort', 'max', '--tools', '',
+      '--include-partial-messages', '--model', selection.modelId, '--effort', selection.reasoning, '--tools', '',
       '--strict-mcp-config', '--setting-sources', '', '--disable-slash-commands', '--no-session-persistence',
       '--system-prompt', instructions, ...(this.schema ? ['--json-schema', this.schema] : [])];
     this.proc = spawn(host.exe, [...host.exeArgs, ...args], {cwd, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: host.env});
@@ -103,6 +112,8 @@ class ClaudeThread {
   }
   handle(m) {
     const t = this.turn;
+    if (m.type === 'rate_limit_event' && m.rate_limit_info) { this.host.emit('notification', {method: 'account/rateLimits/updated', params: {rateLimits: claudeRateLimits(m.rate_limit_info)}}); return; }
+    if (m.type === 'system' && m.subtype === 'compact_boundary' && this.turn) this.notify(this.turn.id, 'item/completed', {item: {type: 'contextCompaction', id: `${this.turn.id}:compact`}});
     if (m.type === 'system' && m.subtype === 'init') {
       this.init = {model: m.model, apiKeySource: m.apiKeySource, tools: m.tools ?? [], mcpServers: (m.mcp_servers ?? []).length, permissionMode: m.permissionMode};
       const problem = this.checkInit(m);
@@ -145,6 +156,7 @@ class ClaudeThread {
         }
       } else { status = 'failed'; error = String(m.result || (Array.isArray(m.errors) && m.errors.join('; ')) || m.subtype || 'Claude turn failed'); }
       this.lastUsage = m.usage ? {inputTokens: m.usage.input_tokens, outputTokens: m.usage.output_tokens, cacheRead: m.usage.cache_read_input_tokens, cacheWrite: m.usage.cache_creation_input_tokens} : null;
+      if (m.usage) this.notify(t.id, 'thread/tokenUsage/updated', {tokenUsage: {last: {inputTokens: (m.usage.input_tokens ?? 0) + (m.usage.cache_read_input_tokens ?? 0) + (m.usage.cache_creation_input_tokens ?? 0), cachedInputTokens: m.usage.cache_read_input_tokens ?? 0, cacheWriteInputTokens: m.usage.cache_creation_input_tokens ?? 0, outputTokens: m.usage.output_tokens ?? 0, reasoningOutputTokens: 0}}});
       this.notify(t.id, 'turn/completed', {turn: {id: t.id, status, ...(error ? {error: {message: error}} : {})}});
     }
   }
@@ -190,13 +202,13 @@ export class ClaudeHost extends EventEmitter {
   }
   validate(selection) {
     if (!this.modelList.some(m => m.id === selection.modelId)) throw new Error(`Claude model is not offered: ${selection.modelId}`);
-    if (selection.reasoning !== 'max') throw new Error('Research workers require max reasoning.');
+    if (!CLAUDE_EFFORTS.includes(selection.reasoning)) throw new Error(`Claude effort must be one of ${CLAUDE_EFFORTS.join(', ')}`);
     if (selection.speedId !== 'standard') throw new Error(`Requested speed is unavailable for ${selection.modelId}: ${selection.speedId}`);
     return selection;
   }
   catalog() {
-    return {verified: true, source: 'Claude Code CLI; model, credential source and tools attested per turn', maxThinkers: 4, account: this.account,
-      models: this.modelList.map(m => ({id: m.id, label: m.label, maximumReasoning: {value: 'max'}, independentSpeed: true, speeds: [{id: 'standard', label: 'Standard'}]}))};
+    return {verified: true, source: 'Claude Code CLI; model, credential source and tools attested per turn', maxThinkers: 4, account: this.account, capabilities: CLAUDE_CAPABILITIES,
+      models: this.modelList.map(m => ({id: m.id, label: m.label, efforts: CLAUDE_EFFORTS, maximumReasoning: {value: 'max'}, independentSpeed: true, speeds: [{id: 'standard', label: 'Standard'}]}))};
   }
   async thread(selection, instructions, cwd, {outputSchema} = {}) {
     if (this.closed) throw new Error('Claude host is closed');
@@ -204,8 +216,8 @@ export class ClaudeHost extends EventEmitter {
     const t = new ClaudeThread(this, {selection, instructions, cwd: cwd ?? this.cwd, outputSchema});
     this.threads.set(t.id, t);
     t.identity = await processIdentityAsync(t.proc.pid);
-    return {threadId: t.id, model: selection.modelId, modelProvider: 'anthropic', serviceTier: 'standard', reasoningEffort: 'max', environmentAccess: false,
-      attestation: 'Claude Code init is checked every turn for exact model, subscription credential and tool list; max effort is requested, not attested',
+    return {threadId: t.id, model: selection.modelId, modelProvider: 'anthropic', serviceTier: 'standard', reasoningEffort: selection.reasoning, environmentAccess: false,
+      attestation: 'Claude Code init is checked every turn for exact model, subscription credential and tool list; effort is requested, not attested',
       ...(t.schema ? {structuredOutputTool: 'StructuredOutput'} : {})};
   }
   request(method, params = {}) {

@@ -15,23 +15,35 @@ Models left alone tend to grab one idea, chase it down a rabbit hole, and lose t
 - **Pause, stop, recover, export.** Exports are hash-verified packages you can restore read-only on another machine.
 - **A local viewer.** A clean, live web view of the notebook that renders Markdown and KaTeX safely.
 
-## Models
+## Any model, any harness
 
-| Host | Models | Login used |
-| --- | --- | --- |
-| Codex app-server | GPT-6 models your Codex catalog offers with max reasoning, for example `gpt-6-astra` and `gpt-6.1-terra` | Your ChatGPT login in Codex Desktop |
-| Claude Code CLI | `claude-opus-5-5`, `claude-sonnet-5-5` | Your Claude subscription login |
+ADHD is an MCP server plus a skill, so any agent app that speaks MCP can drive it: Claude Code, Codex, Claude Desktop, OMP, opencode, Cursor and others. It looks best in apps that can open a browser pane beside the chat, because the live notebook is a local web page.
 
-Mix them freely, for example an Opus thinker with a Terra tracker. Thinkers always run at max reasoning. ADHD never substitutes a different model. Each Claude turn is checked against the CLI's own report of the model, credential source and tool list. By default, API keys and third-party provider routes are refused, so runs use your subscription. Set `GOAL_LOOP_CLAUDE_ALLOW_API_KEY=1` to allow an API key.
+The thinkers and the tracker run on **backends**. Pick any model the catalog offers for either role. A model you have spare usage on, or one that is good at the subject, can do the thinking.
 
-Defaults: one thinker (up to four). The tracker is Terra, or Sonnet 5.5 when every thinker is a Claude model. If you have Codex, use Terra as the tracker: it writes a note in about 30 seconds, while Sonnet 5.5 at max effort took 3 to 7 minutes per note in testing.
+| Backend | Models | Login | Tool-free | Usage guard | Cost |
+| --- | --- | --- | --- | --- | --- |
+| `codex` | Every model your Codex catalog offers, for example `gpt-6-astra`, `gpt-6.1-terra` | Your ChatGPT login | attested by the app-server | reads plan usage; stops before purchased credits | plan |
+| `claude` | `claude-opus-5-5`, `claude-sonnet-5-5` | Your Claude subscription in Claude Code | attested per turn | stops on Claude extra usage or a reached limit | plan |
+| `devin` | `swe-2`, `swe-2-flash` | Your Devin CLI login | tool-less agent; any tool use fails the turn | token counts | free models |
+| `openai:<name>` | Whatever your endpoint serves | API key from an environment variable | plain completions, no tools sent | `maxTokens` required for per-token billing | yours |
 
-## Requirements
+`openai:<name>` covers any OpenAI-compatible endpoint: Ollama, LM Studio, vLLM, llama.cpp, OpenRouter and provider gateways. List them in `~/.adhd/data/endpoints.json` (or point `GOAL_LOOP_ENDPOINTS` at a file):
 
-- Node.js 24 or later
-- Windows 10 or 11. It has only been tested on Windows. macOS and Linux code paths exist but are untested.
-- For GPT models: Codex Desktop running and signed in with ChatGPT (or set `GOAL_LOOP_CODEX_EXE`)
-- For Claude models: Claude Code installed and signed in (or set `GOAL_LOOP_CLAUDE_EXE`)
+```json
+[{"name": "local", "baseUrl": "http://127.0.0.1:11434/v1", "billing": "local",
+  "models": [{"id": "qwen3:14b", "contextTokens": 32768}]},
+ {"name": "router", "baseUrl": "https://openrouter.ai/api/v1", "apiKeyEnv": "OPENROUTER_API_KEY", "billing": "per-token",
+  "models": [{"id": "some/model", "contextTokens": 131072}]}]
+```
+
+An endpoint on another machine in your own network (for example an Ollama box) may use plain `http` when it needs no key; anything with a key must use `https`. `billing: "local"` is accepted only for this machine or a private-network address. A broken `endpoints.json` disables only the endpoints and is reported under `unavailable` in the catalog.
+
+Keys stay in the environment. They are never written to the database, the audit log or exports. Since these endpoints keep no conversation state, ADHD keeps the history itself, in a byte-stable order so provider prompt caching works, and compacts it when it nears the model's context size.
+
+A selection is `{"backend", "modelId", "speedId", "reasoning"}` with values from `goal_loop_catalog`. ADHD never substitutes a different model. By default Claude and Codex refuse API keys and third-party routes, so runs use your subscription (`GOAL_LOOP_CLAUDE_ALLOW_API_KEY=1` allows a key for Claude).
+
+**Defaults.** Thinkers think at max effort where the backend can set it. With no thinkers named, ADHD uses the strongest installed model whose plan is not used up (Astra, then Opus, then the first model listed); the catalog shows the Codex plan's usage. The tracker only organizes, so it defaults to something cheap: Terra with a Codex thinker, Sonnet at medium effort with a Claude thinker, otherwise the thinker's own model.
 
 ## Install
 
@@ -52,8 +64,8 @@ Write a spec file:
   "goal": "Why does checkout time out under load, and what is the smallest fix?",
   "context": "Relevant excerpts, measurements, constraints and unknowns.",
   "configuration": {
-    "thinkers": [{"modelId": "claude-opus-5-5", "speedId": "standard", "reasoning": "max"}],
-    "tracker": {"modelId": "gpt-6.1-terra", "speedId": "priority", "reasoning": "max"},
+    "thinkers": [{"backend": "claude", "modelId": "claude-opus-5-5", "speedId": "standard", "reasoning": "max"}],
+    "tracker": {"backend": "devin", "modelId": "swe-2-flash", "speedId": "standard", "reasoning": "default"},
     "continuous": true
   }
 }
@@ -64,14 +76,28 @@ node native/cli.mjs catalog
 node native/cli.mjs run --spec research.json
 ```
 
+### Usage protection
+
+A research loop runs for hours, so a mistake can cost real money. ADHD guards every backend it can measure:
+
+- **`allowCredits`** (default `false`): a run won't start, and it stops, once a Codex plan limit is used up or Claude starts drawing on paid extra usage. Without this guard, Codex at 100% keeps going on purchased credits, and one max-reasoning Astra round can cost tens of dollars.
+- **`maxUsagePercent`** (default `90`): a continuous Codex run pauses when your plan usage reaches this percentage.
+- **`maxTokens`**: caps the whole run's input plus output tokens on any backend. It is required for a per-token endpoint.
+- **Token use:** every turn's input, cached input and output tokens are recorded. Status shows `cacheHitPercent`; a long run with a low figure is re-reading its history at full price.
+- **Effort and tier:** max effort and the `priority`/`ultrafast` tiers are faster or deeper and cost more per round.
+
 `run` prints the viewer URL. Type `quit` to stop. Continuous runs go on until you pause or stop them. For a bounded run, use `"maxRounds"` and `"maxMinutes"` instead of `"continuous"`. Data lives in `~/.adhd/data` unless you pass `--data` or set `GOAL_LOOP_DATA`.
 
-## Use from an agent (MCP)
+## Use from an agent (MCP + skill)
+
+Register the server in your agent app, then copy `skill/adhd/` into its skills folder (for example `~/.claude/skills/adhd` or `~/.codex/skills/adhd`). The skill teaches the agent the workflow: read the catalog, choose models, start, open the live page, feed evidence, stop.
 
 ```bash
-codex mcp add adhd -- node /path/to/adhd/native/mcp.mjs
 claude mcp add adhd -- node /path/to/adhd/native/mcp.mjs
+codex mcp add adhd -- node /path/to/adhd/native/mcp.mjs
 ```
+
+Other apps take the same command in their MCP settings (`command: node`, `args: ["/path/to/adhd/native/mcp.mjs"]`).
 
 | Tool | Purpose |
 | --- | --- |
@@ -87,14 +113,26 @@ The owning agent runs tests and retrieval itself, then submits the results as ev
 
 ## Honest limits
 
-- The thinker gets no tools, and every tool attempt is detected and stops the run. That is not proof that every host feature is excluded.
+- Workers get no tools. Codex and Claude attest that; the Devin profile launches its tool-less agent and fails any turn that tries a tool. That is not proof that every host feature is excluded.
+- Only the `codex`, `claude` and `devin` backends have run live. The OpenAI-compatible backend is tested against a local fake server only.
+- The harness that drives ADHD cannot lend it its own model: ADHD runs models it can start itself.
 - Timing metrics measure this controller, not provider inference speed or cost.
-- Claude effort is requested as `max`; the CLI doesn't report it back. Claude reports the model at the first turn, so a mismatch fails that turn after inference has started.
+- Claude effort is requested, not reported back by the CLI. Devin and many endpoints cannot set effort at all. Claude reports the model at the first turn, so a mismatch fails that turn after inference has started.
 - The big-picture guard is a prompt instruction to the thinker and tracker. The tests check that every round carries it, not how well a model follows it.
 - A slow tracker never holds up the thinker, but its notes arrive less often and refer to older rounds.
+- Claude's guard reacts to the plan events the CLI reports during a turn, so at most the turn that crossed into extra usage is paid. Devin and endpoints report tokens only; use `maxTokens`.
 - Stopping confirms the local host processes exited, not upstream billing cancellation.
 - The `worker/`, `db/` and `drizzle/` folders are an optional hosted storage service. They aren't needed for local use and aren't deployed by this repository. `npm run package:worker` bundles it and needs your own `.openai/hosting.json`.
 
 ## Tests
 
-`npm test` runs the full suite with fake hosts, using no model usage. `scripts/verify-native-continuous.mjs <dir>` is an opt-in live acceptance run on your own subscriptions. Choose its workers with `GOAL_LOOP_VERIFY_THINKER` and `GOAL_LOOP_VERIFY_TRACKER`.
+`npm test` runs the full suite with fake hosts, using no model usage. `scripts/verify-native-continuous.mjs <dir>` is an opt-in live acceptance run on your own subscriptions. Choose its workers with JSON in `GOAL_LOOP_VERIFY_THINKER` and `GOAL_LOOP_VERIFY_TRACKER`, and its length with `GOAL_LOOP_VERIFY_ROUNDS` (default 6) and `GOAL_LOOP_VERIFY_MINUTES`:
+
+```bash
+GOAL_LOOP_VERIFY_THINKER='{"backend":"claude","modelId":"claude-opus-5-5","speedId":"standard","reasoning":"max"}' \
+GOAL_LOOP_VERIFY_TRACKER='{"backend":"claude","modelId":"claude-sonnet-5-5","speedId":"standard","reasoning":"medium"}' \
+GOAL_LOOP_VERIFY_ROUNDS=8 GOAL_LOOP_VERIFY_MINUTES=40 \
+node scripts/verify-native-continuous.mjs ./verify-out
+```
+
+Measured on 2026-11-16 with that configuration: 8 Opus rounds in 8 minutes 14 seconds, one Sonnet note per round (16 to 38 seconds each), 73% of input tokens served from cache, and a gap of at most 5 ms between rounds. The run checks that a tracker note reaches a later round, so give it at least 6 rounds. With Devin `swe-2` as thinker and tracker, 6 rounds took 46 seconds.

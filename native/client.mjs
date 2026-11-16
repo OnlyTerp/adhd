@@ -2,22 +2,35 @@ import {spawn, spawnSync} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import {StringDecoder} from 'node:string_decoder';
 import {existsSync} from 'node:fs';
+import {dirname, join} from 'node:path';
 
+// Codex Desktop's bundled CLI is preferred (it matches the signed-in app); otherwise the
+// codex CLI on PATH. Returns [executable, ...leading args].
 export function discoverCodex() {
-  if (process.env.GOAL_LOOP_CODEX_EXE) return process.env.GOAL_LOOP_CODEX_EXE;
-  if (process.platform !== 'win32') return 'codex';
+  if (process.env.GOAL_LOOP_CODEX_EXE) return [process.env.GOAL_LOOP_CODEX_EXE];
+  if (process.platform !== 'win32') return ['codex'];
   const script = "$parents=@(Get-CimInstance Win32_Process -Filter \"name='ChatGPT.exe'\" | ForEach-Object { $_.ProcessId }); Get-CimInstance Win32_Process -Filter \"name='codex.exe'\" | Where-Object { $parents -contains $_.ParentProcessId -and $_.ExecutablePath } | Select-Object -First 1 -ExpandProperty ExecutablePath";
   const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-Command',script], {encoding:'utf8', timeout:6000, windowsHide:true});
   const exe = result.stdout?.trim();
-  if (exe && existsSync(exe)) return exe;
-  throw new Error('Open Codex Desktop or set GOAL_LOOP_CODEX_EXE to its installed codex executable.');
+  if (exe && existsSync(exe)) return [exe];
+  const found = spawnSync('where.exe', ['codex'], {encoding: 'utf8', windowsHide: true, timeout: 4000});
+  for (const line of (found.stdout || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean)) {
+    if (/\.exe$/i.test(line) && existsSync(line)) return [line];
+    if (/\.cmd$/i.test(line)) { const js = join(dirname(line), 'node_modules', '@openai', 'codex', 'bin', 'codex.js'); if (existsSync(js)) return [process.execPath, js]; }
+  }
+  throw new Error('Install the Codex CLI (or open Codex Desktop), or set GOAL_LOOP_CODEX_EXE to its codex executable.');
 }
 
+export const CODEX_CAPABILITIES = {toolFree: 'attested', usageMeter: 'plan', billing: 'subscription', structuredOutput: 'native', compaction: 'reported'};
+const efforts = m => (m.supportedReasoningEfforts ?? []).map(e => e.reasoningEffort);
+
 export class CodexClient extends EventEmitter {
-  constructor({exe=discoverCodex(), cwd, requestTimeout=20000}={}) {
+  constructor({exe, cwd, requestTimeout=20000}={}) {
+    const [bin, ...lead] = exe ? [exe] : discoverCodex();
     super(); this.pending=new Map(); this.seq=0; this.closed=false; this.requestTimeout=requestTimeout;
-    this.proc=spawn(exe,['app-server','--stdio'],{cwd, shell:false, windowsHide:true, stdio:['pipe','pipe','pipe']});
-    this.exe=exe; this.stderr=''; this.buffer=''; const decoder=new StringDecoder('utf8');
+    // notify=[]: the user's desktop notify hook must not fire after every research round.
+    this.proc=spawn(bin,[...lead,'-c','notify=[]','app-server','--stdio'],{cwd, shell:false, windowsHide:true, stdio:['pipe','pipe','pipe']});
+    this.exe=bin; this.stderr=''; this.buffer=''; const decoder=new StringDecoder('utf8');
     this.proc.stderr.on('data', chunk=>{this.stderr=(this.stderr+chunk.toString()).slice(-4000);});
     this.proc.stdin.on('error',()=>{});
     this.proc.stdout.on('data', chunk=>{
@@ -70,16 +83,16 @@ export class CodexClient extends EventEmitter {
   }
   validate(selection){
     const m=this.models.find(m=>m.model===selection.modelId);
-    if(!m||!m.supportedReasoningEfforts?.some(e=>e.reasoningEffort==='max'))throw new Error(`Model/max is unavailable: ${selection.modelId}`);
+    if(!m)throw new Error(`Codex model is unavailable: ${selection.modelId}`);
+    if(!efforts(m).includes(selection.reasoning))throw new Error(`Effort ${selection.reasoning} is unavailable for ${selection.modelId}; offered: ${efforts(m).join(', ')}`);
     if(!m.serviceTiers?.some(t=>t.id===selection.speedId))throw new Error(`Requested service tier is unavailable for ${selection.modelId}: ${selection.speedId}`);
-    if(selection.reasoning!=='max')throw new Error('Research workers require max reasoning.');
     return selection;
   }
-  catalog(){return {verified:true,source:'Installed Codex app-server model/list',maxThinkers:4,account:this.account,models:this.models.filter(m=>/^gpt-6/.test(m.model)&&m.supportedReasoningEfforts?.some(e=>e.reasoningEffort==='max')&&m.serviceTiers?.length).sort((a,b)=>(a.model==='gpt-6-astra'?-1:b.model==='gpt-6-astra'?1:0)).map(m=>({id:m.model,label:m.displayName||m.model,maximumReasoning:{value:'max'},independentSpeed:true,speeds:m.serviceTiers.map(t=>({id:t.id,label:t.name}))}))};}
+  catalog(){return {verified:true,source:'Installed Codex app-server model/list',maxThinkers:4,account:this.account,capabilities:CODEX_CAPABILITIES,models:this.models.filter(m=>efforts(m).length&&m.serviceTiers?.length).map(m=>({id:m.model,label:m.displayName||m.model,efforts:efforts(m),...(efforts(m).includes('max')?{maximumReasoning:{value:'max'}}:{}),independentSpeed:true,speeds:m.serviceTiers.map(t=>({id:t.id,label:t.name}))}))};}
   async thread(selection,instructions,cwd){
     this.validate(selection);
-    const receipt=await this.request('thread/start',{model:selection.modelId,modelProvider:'openai',allowProviderModelFallback:false,serviceTier:selection.speedId,cwd,environments:[],dynamicTools:[],selectedCapabilityRoots:[],sandbox:'read-only',approvalPolicy:'never',config:this.restrictions,developerInstructions:instructions,ephemeral:true});
-    if(receipt.model!==selection.modelId||receipt.modelProvider!=='openai'||receipt.serviceTier!==selection.speedId||receipt.reasoningEffort!=='max')throw new Error('Host did not admit the exact requested model, provider, tier, and max reasoning. No inference started.');
+    const receipt=await this.request('thread/start',{model:selection.modelId,modelProvider:'openai',allowProviderModelFallback:false,serviceTier:selection.speedId,cwd,environments:[],dynamicTools:[],selectedCapabilityRoots:[],sandbox:'read-only',approvalPolicy:'never',config:{...this.restrictions,model_reasoning_effort:selection.reasoning},developerInstructions:instructions,ephemeral:true});
+    if(receipt.model!==selection.modelId||receipt.modelProvider!=='openai'||receipt.serviceTier!==selection.speedId||receipt.reasoningEffort!==selection.reasoning)throw new Error('Host did not admit the exact requested model, provider, tier and effort. No inference started.');
     return {threadId:receipt.thread.id,model:receipt.model,modelProvider:receipt.modelProvider,serviceTier:receipt.serviceTier,reasoningEffort:receipt.reasoningEffort,environmentAccess:false};
   }
   async close(){

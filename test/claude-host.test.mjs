@@ -107,12 +107,12 @@ test('router starts only the hosts a run needs and routes by model', async t => 
   t.after(() => router.close());
   await router.initialize({models: ['claude-opus-5-5', 'claude-sonnet-5-5']});
   assert.equal(codexBuilt, 0);
-  assert.throws(() => router.validate({modelId: 'gpt-6-astra', speedId: 'priority', reasoning: 'max'}), /Codex host is unavailable/);
+  assert.throws(() => router.validate({modelId: 'gpt-6-astra', speedId: 'priority', reasoning: 'max'}), /Backend codex is unavailable/);
   router.validate(opus);
   const catalogRouter = new HostRouter({codexFactory: () => { throw new Error('ChatGPT is not open'); }, claudeFactory: o => new ClaudeHost({...o, exe: process.execPath, exeArgs: [fake]})});
   await catalogRouter.initialize();
   const c = catalogRouter.catalog();
-  assert.deepEqual(c.models.map(m => m.id), ['claude-opus-5-5', 'claude-sonnet-5-5']); assert.match(c.unavailable.codex, /not open/);
+  assert.deepEqual(c.models.filter(m => m.backend === 'claude').map(m => m.id), ['claude-opus-5-5', 'claude-sonnet-5-5']); assert.match(c.unavailable.codex, /not open/);
   await catalogRouter.close();
   await assert.rejects(new HostRouter({codexFactory: () => { throw new Error('ChatGPT is not open'); }}).initialize({models: ['gpt-6-astra']}), /not open/);
 });
@@ -124,10 +124,10 @@ test('multi-process host identity is dead only when every member is', () => {
 });
 
 test('Claude-only configuration defaults to a Sonnet recorder; Astra keeps Terra', () => {
-  assert.deepEqual(configuration({thinkers: [opus], maxRounds: 2, maxMinutes: 1}).tracker, sonnet);
+  assert.deepEqual(configuration({thinkers: [opus], maxRounds: 2, maxMinutes: 1}).tracker, {...sonnet, backend: 'claude', reasoning: 'medium'});
   assert.equal(configuration({}).tracker.modelId, 'gpt-6.1-terra');
   assert.equal(configuration({thinkers: [opus], tracker: {modelId: 'gpt-6.1-terra', speedId: 'priority', reasoning: 'max'}}).tracker.modelId, 'gpt-6.1-terra');
-  assert.throws(() => configuration({tracker: {modelId: 'x', speedId: 'y', reasoning: 'high'}}), /max reasoning/);
+  assert.throws(() => configuration({tracker: {speedId: 'y', reasoning: 'high'}}), /modelId/);
 });
 
 test('a bounded Opus run with a Sonnet recorder publishes every round verbatim', async t => {
