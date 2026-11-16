@@ -1,5 +1,5 @@
 import {spawn, spawnSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {existsSync,readFileSync} from 'node:fs';
 export function processIdentity(pid) {
   if(!Number.isInteger(pid)||pid<1)return {status:'unknown'};
   try{process.kill(pid,0);}catch(e){return {status:e.code==='ESRCH'?'dead':'unknown'};}
@@ -9,7 +9,13 @@ export function processIdentity(pid) {
       const r=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`],{encoding:'utf8',windowsHide:true,timeout:3000});
       if(r.status!==0||!/^\d+$/.test(r.stdout?.trim()))return {status:'unknown'};
       start=r.stdout.trim();
-    }else{const stat=readFileSync(`/proc/${pid}/stat`,'utf8');start=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];}
+    }else if(existsSync('/proc/self/stat')){const stat=readFileSync(`/proc/${pid}/stat`,'utf8');start=stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];}
+    else{
+      // macOS and the BSDs have no /proc: ps reports the start time to the second.
+      const r=spawnSync('ps',['-o','lstart=','-p',String(pid)],{encoding:'utf8',env:{...process.env,LC_ALL:'C'},timeout:3000});
+      start=r.status===0?r.stdout.trim().replace(/\s+/g,' '):'';
+      if(!start)return {status:'unknown'};
+    }
     return {status:'alive',pid,start};
   }catch{return {status:'unknown'};}
 }
