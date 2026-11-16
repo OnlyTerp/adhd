@@ -3,7 +3,7 @@ name: adhd
 description: >-
   Run a long, uninterrupted deep-thinking loop on a hard problem (math, algorithms,
   debugging theory, design trade-offs, research questions) with any model the user
-  has - Codex/ChatGPT models, Claude, Devin's free SWE models, or any
+  has - Codex/ChatGPT models, Claude, Devin's SWE models, or any
   OpenAI-compatible endpoint. Thinker models work round after round without tools
   while an independent tracker organizes their results into a live document. Use
   when the user asks to "think about this for a long time", "run ADHD", "have
@@ -36,7 +36,8 @@ command in their app's MCP settings) and restart the app.
    - The Codex backend shows `usage.usedPercent`; at its limit a run refuses to
      start, so pick another backend.
    - Check `capabilities.billing`. `per-token` costs money on every call and needs
-     `maxTokens`. `free` and `local` cost nothing.
+     `maxTokens`. `free` and `local` cost nothing as far as ADHD knows; it does
+     not check prices, so mention it if the user's plan may differ.
 3. **Start** with `goal_loop_start`:
    - `goal` is one concrete objective.
    - `context` holds the source excerpts, constraints, known results and unknowns

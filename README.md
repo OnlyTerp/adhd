@@ -12,13 +12,21 @@ Models left alone tend to grab one idea, chase it down a rabbit hole, and lose t
 
 ## Quick start
 
-You need **Node.js 24 or newer** and at least one signed-in backend: Claude Code, the Codex CLI, the Devin CLI (its `swe-2` models are free), or any OpenAI-compatible endpoint such as a local Ollama.
+You need **Node.js 24 or newer** and at least one signed-in backend: Claude Code, the Codex CLI, the Devin CLI (its `swe-2` models were free at the time of writing), or any OpenAI-compatible endpoint such as a local Ollama.
 
 ```bash
 git clone https://github.com/OnlyTerp/adhd.git
+
+# Claude Code
 claude mcp add -s user adhd -- node "$PWD/adhd/native/mcp.mjs"
 mkdir -p ~/.claude/skills && cp -r adhd/skill/adhd ~/.claude/skills/
+
+# Codex
+codex mcp add adhd -- node "$PWD/adhd/native/mcp.mjs"
+mkdir -p ~/.codex/skills && cp -r adhd/skill/adhd ~/.codex/skills/
 ```
+
+These are bash commands; on Windows run them in Git Bash.
 
 Restart your agent app and ask it to "run ADHD on" a hard question. It reads the catalog of models you have, starts the loop, opens the live notebook and feeds results back as evidence. The repository ships with its viewer assets built, so no `npm install` is needed to use it. Other apps: see [Use from an agent](#use-from-an-agent-mcp--skill).
 
@@ -42,7 +50,7 @@ The thinkers and the tracker run on **backends**. Pick any model the catalog off
 | --- | --- | --- | --- | --- | --- |
 | `codex` | Every model your Codex catalog offers, for example `gpt-6-astra`, `gpt-6.1-terra` | Your ChatGPT login | attested by the app-server | reads plan usage; stops before purchased credits | plan |
 | `claude` | `claude-opus-5-5`, `claude-sonnet-5-5` | Your Claude subscription in Claude Code | attested per turn | stops on Claude extra usage or a reached limit | plan |
-| `devin` | `swe-2`, `swe-2-flash` | Your Devin CLI login | tool-less agent; any tool use fails the turn | token counts | free models |
+| `devin` | `swe-2`, `swe-2-flash` | Your Devin CLI login | tool-less agent; any tool use fails the turn | token counts | free at the time of writing |
 | `openai:<name>` | Whatever your endpoint serves | API key from an environment variable | plain completions, no tools sent | `maxTokens` required for per-token billing | yours |
 
 `openai:<name>` covers any OpenAI-compatible endpoint: Ollama, LM Studio, vLLM, llama.cpp, OpenRouter and provider gateways. List them in `~/.adhd/data/endpoints.json` (or point `GOAL_LOOP_ENDPOINTS` at a file):
@@ -134,6 +142,7 @@ The owning agent runs tests and retrieval itself, then submits the results as ev
 - Only the `codex`, `claude` and `devin` backends have run live, and live runs so far were on Windows. The test suite runs on Linux, macOS and Windows in CI. The OpenAI-compatible backend is tested against a local fake server only.
 - The harness that drives ADHD cannot lend it its own model: ADHD runs models it can start itself.
 - Timing metrics measure this controller, not provider inference speed or cost.
+- ADHD does not check prices. The `devin` backend is labelled free because the `swe-2` models were free when it was written; check Devin's current pricing.
 - Claude effort is requested, not reported back by the CLI. Devin and many endpoints cannot set effort at all. Claude reports the model at the first turn, so a mismatch fails that turn after inference has started.
 - The big-picture guard is a prompt instruction to the thinker and tracker. The tests check that every round carries it, not how well a model follows it.
 - A slow tracker never holds up the thinker, but its notes arrive less often and refer to older rounds.
