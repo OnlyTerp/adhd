@@ -10,6 +10,7 @@ import {StringDecoder} from 'node:string_decoder';
 import {existsSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {processIdentityAsync} from './identity.mjs';
+import {extractJson} from './json.mjs';
 
 export const ACP_PROFILES = [
   {
@@ -47,13 +48,8 @@ export function discoverCommand(command, env = process.env) {
   throw new Error(`Install the ${command} CLI (no ${command}.exe on PATH) or set GOAL_LOOP_${command.toUpperCase()}_EXE.`);
 }
 
-// A model asked for JSON may wrap it in a fence or a sentence; take the outermost object.
-export function extractJson(text) {
-  const tries = [stripFence(text)], a = text.indexOf('{'), b = text.lastIndexOf('}');
-  if (a >= 0 && b > a) tries.push(text.slice(a, b + 1));
-  for (const x of tries) { try { const v = JSON.parse(x); if (v && typeof v === 'object' && !Array.isArray(v)) return v; } catch {} }
-  return null;
-}
+// A model asked for JSON may wrap it in a fence or a sentence, or leave LaTeX unescaped.
+export {extractJson} from './json.mjs';
 export function stripFence(text) {
   const m = text.trim().match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/);
   return (m ? m[1] : text).trim();

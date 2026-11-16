@@ -144,3 +144,29 @@ test('the default thinker skips a backend whose plan is spent', async () => {
   assert.throws(() => defaultThinker({backends: [{id: 'codex', usage: spent}], models: models.slice(0, 1)}), /plan limit: codex/);
   assert.equal(planUsage({rateLimitsByLimitId: {a: {primary: {usedPercent: 40}}, b: {rateLimitReachedType: 'credits'}}}).exhausted, true);
 });
+
+test('a Codex run refuses to start when the plan meter cannot be read', async t => {
+  const s = setup(t);
+  const host = () => s.hosts.at(-1);
+  const make = s.runtime.clientFactory;
+  s.runtime.clientFactory = o => Object.assign(make(o), {rateLimits: async () => { throw new Error('meter down'); }});
+  s.runtime.start(s.id, {thinkers: [{backend: 'codex', modelId: 'gpt-6-astra', speedId: 'priority', reasoning: 'max'}], maxRounds: 1});
+  await s.until(() => s.runtime.status(s.id).state === 'failed');
+  assert.match(JSON.stringify(s.runtime.status(s.id).run), /Could not read Codex plan usage/);
+  assert.equal(host().turns.length, 0);
+});
+
+test('LaTeX left unescaped inside a JSON answer is recovered without corrupting it', async () => {
+  const {extractJson} = await import('../native/json.mjs');
+  // Seen live from swe-2-flash: \frac escaped, \( and \) not.
+  const seen = String.raw`{"markdown":"closed form \(p_n=\frac23+\frac13(-\frac12)^n\), so \(p_n\to\frac23\)","feedback":{}}`;
+  assert.equal(extractJson(seen).markdown, String.raw`closed form \(p_n=\frac23+\frac13(-\frac12)^n\), so \(p_n\to\frac23\)`);
+  // Valid JSON whose escapes are really LaTeX (\f, \t, \b) is read as LaTeX, not as control characters.
+  assert.equal(extractJson(String.raw`{"m":"\frac{1}{2} \theta \beta"}`).m, String.raw`\frac{1}{2} \theta \beta`);
+  // Ordinary escapes and newlines are untouched; raw newlines inside strings are tolerated.
+  assert.equal(extractJson('{"m":"a\nb \\"q\\" \u00e9"}').m, 'a\nb "q" é');
+  assert.equal(extractJson('{"m":"line1\nline2"}').m, 'line1\nline2');
+  assert.equal(extractJson('Sure: {"m": "x"} done').m, 'x');
+  // A real newline escape before e.g. or i.e. stays a newline when the same answer also needs LaTeX repair.
+  assert.equal(extractJson(String.raw`{"m":"\(x\) \frac12\ne.g. one\ni.e. two"}`).m, String.raw`\(x\) \frac12` + '\ne.g. one\ni.e. two');
+});

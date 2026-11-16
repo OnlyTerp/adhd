@@ -4,6 +4,7 @@
 // append-only message list (byte-stable prefix, so provider prompt caching works),
 // compacts it when it nears the context window, and never sends tools. Events are
 // translated into the notification shape described in BACKENDS.md.
+import {extractJson} from './json.mjs';
 import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
 
@@ -77,7 +78,6 @@ export function parseEndpoints(json) {
 }
 
 const redactWith = key => text => key ? String(text).split(key).join('[redacted]') : String(text);
-const fenced = /^```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)\r?\n?```$/;
 
 // Sleeps, waking early (rejected) when the signal aborts.
 function pause(ms, signal) {
@@ -282,9 +282,7 @@ class OpenAIThread {
       if (!raw.trim()) throw new TurnFailure(`Endpoint ${this.host.endpoint.name} returned no visible answer`);
       return raw;
     }
-    let s = raw.trim();
-    const m = fenced.exec(s); if (m) s = m[1].trim();
-    let parsed; try { parsed = JSON.parse(s); } catch { parsed = undefined; }
+    const parsed = extractJson(raw);
     if (!plainObject(parsed)) throw new TurnFailure('Endpoint returned no valid JSON');
     return JSON.stringify(parsed);
   }

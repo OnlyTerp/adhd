@@ -141,7 +141,7 @@ test('tracker snapshot bounds citations and feedback-disabled thinkers remain in
 });
 
 test('natural shutdown fences admissions and reports newly pending recording',async t=>{
-  const options={deferClose:true},s=setup(t,options);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true));
+  const options={deferClose:true},s=setup(t,options);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true));
   await s.until(()=>s.hosts[0].releaseClose);const admitted=s.hosts[0].turns.length;
   try{s.runtime.evidence(s.id,observation());await tick();}finally{s.hosts[0].releaseClose();}
   await s.runtime.runs.get(s.id).task;const result=s.runtime.status(s.id);
@@ -183,7 +183,7 @@ test('late admission acknowledgement after stop remains fenced and interrupted',
   const s=setup(t,{deferAck:true});s.runtime.start(s.id,cfg);const first=await s.turn(false);await s.runtime.control(s.id,'stop');first.releaseAck();await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).state,'stopped');assert.equal(s.hosts[0].turns.length,1);assert.equal(first.done,true);
 });
 test('publication during recorder release schedules another pass without a future thinker turn',async t=>{
-  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false));const tracker=await s.turn(true),second=await s.turn(false,1);const original=s.store.pending.bind(s.store);let injected=false;
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:2});s.publish(s.hosts[0],await s.turn(false));const tracker=await s.turn(true),second=await s.turn(false,1);const original=s.store.pending.bind(s.store);let injected=false;
   s.store.pending=id=>{const pending=original(id);if(!injected&&!pending.n&&s.store.latest(id)){injected=true;queueMicrotask(()=>s.publish(s.hosts[0],second,'complete'));}return pending;};
   s.record(s.hosts[0],tracker);s.record(s.hosts[0],await s.turn(true,1));await s.runtime.runs.get(s.id).task;assert.equal(injected,true);assert.equal(s.runtime.status(s.id).run.recordedCount,2);assert.equal(s.runtime.status(s.id).state,'completed');
 });
@@ -191,7 +191,7 @@ test('multi-thinker pause becomes ready when another thinker completes',async t=
   const s=setup(t);const choice={modelId:'gpt-6-astra',speedId:'priority',reasoning:'max'};s.runtime.start(s.id,{...cfg,thinkers:[choice,choice]});const first=await s.turn(false),second=await s.turn(false,1);await s.runtime.control(s.id,'pause');s.publish(s.hosts[0],first);s.publish(s.hosts[0],second,'complete');await s.until(()=>s.runtime.status(s.id).state==='paused');assert.equal(s.hosts[0].turns.filter(x=>!x.tracker).length,2);
 });
 test('recorder retries completed malformed output and does not restart thinkers',async t=>{
-  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'complete');s.hosts[0].complete(await s.turn(true),'not JSON');s.record(s.hosts[0],await s.turn(true,1));await s.runtime.runs.get(s.id).task;const r=s.runtime.status(s.id);assert.equal(r.state,'completed');assert.equal(r.run.recorder.retries,1);assert.equal(r.run.sourceCount,1);assert.equal(s.hosts[0].turns.filter(x=>!x.tracker).length,1);
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'complete');s.hosts[0].complete(await s.turn(true),'not JSON');s.record(s.hosts[0],await s.turn(true,1));await s.runtime.runs.get(s.id).task;const r=s.runtime.status(s.id);assert.equal(r.state,'completed');assert.equal(r.run.recorder.retries,1);assert.equal(r.run.sourceCount,1);assert.equal(s.hosts[0].turns.filter(x=>!x.tracker).length,1);
 });
 test('explicit recording recovery drains stopped sources without a thinker thread',async t=>{
   const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'complete');await s.turn(true);await s.runtime.control(s.id,'stop');
@@ -235,13 +235,13 @@ test('evidence is idempotent, attributed, and reaches next turn without waiting 
   const source=s.store.sources(s.id)[0],tracker=await s.turn(true);const ledger={findings:[{id:'widget-result',kind:'correction',summary:'The observation contradicts the estimate.',sourceIds:[source.uid],evidenceIds:[receipt.evidenceId]}],questions:[],nextDirections:['Explain the changed result.']};s.record(s.hosts[0],tracker,ledger);await s.until(()=>s.store.latest(s.id));s.publish(s.hosts[0],second);const third=await s.turn(false,2);assert.match(third.p.input[0].text,/The observation contradicts the estimate/);assert.match(third.p.input[0].text,/'feedbackRevision'|"feedbackRevision":1/);assert.equal(s.store.sources(s.id)[1].input_revision,2);
 });
 test('invalid citations cannot enter the accepted feedback ledger',async t=>{
-  const s=setup(t);s.runtime.start(s.id,{...cfg,recorderRetries:0});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true),{findings:[{id:'x',kind:'new',summary:'unsupported',sourceIds:['source-invented'],evidenceIds:[]}],questions:[],nextDirections:[]});await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).state,'recording_failed');assert.equal(s.store.latest(s.id),undefined);
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1,recorderRetries:0});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true),{findings:[{id:'x',kind:'new',summary:'unsupported',sourceIds:['source-invented'],evidenceIds:[]}],questions:[],nextDirections:[]});await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).state,'recording_failed');assert.equal(s.store.latest(s.id),undefined);
 });
 test('tracker thread rotates from accepted checkpoint when context budget fills',async t=>{
-  const s=setup(t);s.runtime.start(s.id,{...cfg,trackerContextBytes:16384});s.publish(s.hosts[0],await s.turn(false));const firstTracker=await s.turn(true);s.record(s.hosts[0],firstTracker,feedback(),'## Keep this caveat\n'+'x'.repeat(15200));await s.until(()=>s.store.latest(s.id));s.publish(s.hosts[0],await s.turn(false,1),'complete');const secondTracker=await s.turn(true,1);assert.notEqual(firstTracker.p.threadId,secondTracker.p.threadId);assert.match(secondTracker.p.input[0].text,/Keep this caveat/);s.record(s.hosts[0],secondTracker);await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.metrics.trackerRotations,1);
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:2,trackerContextBytes:16384});s.publish(s.hosts[0],await s.turn(false));const firstTracker=await s.turn(true);s.record(s.hosts[0],firstTracker,feedback(),'## Keep this caveat\n'+'x'.repeat(15200));await s.until(()=>s.store.latest(s.id));s.publish(s.hosts[0],await s.turn(false,1),'complete');const secondTracker=await s.turn(true,1);assert.notEqual(firstTracker.p.threadId,secondTracker.p.threadId);assert.match(secondTracker.p.input[0].text,/Keep this caveat/);s.record(s.hosts[0],secondTracker);await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.metrics.trackerRotations,1);
 });
 test('compact status never constructs the notebook; export restores independent records and rejects tampering',async t=>{
-  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true));await s.runtime.runs.get(s.id).task;
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true));await s.runtime.runs.get(s.id).task;
   const document=s.store.document;s.store.document=()=>{throw new Error('must not build document');};assert.equal(s.runtime.status(s.id).run.sourceCount,1);s.store.document=document;
   const pack=s.store.package(s.id),bundle=JSON.parse(readFileSync(pack.path,'utf8'));assert.equal(Store.verifyPackage(bundle).valid,true);const restored=s.store.restore(bundle,'restore-1');assert.equal(s.store.document(restored.id),s.store.document(s.id));assert.equal(s.store.restore(bundle,'restore-1').replayed,true);assert.equal(s.store.run(restored.id).state,'restored');bundle.payload.markdown+=' altered';assert.throws(()=>Store.verifyPackage(bundle),/hash mismatch/);
 });
@@ -251,4 +251,69 @@ test('slow catalog does not serialize control requests',async t=>{
 test('math placeholder literals and fenced code remain readable; parser failure falls back to source',()=>{
   const code=readFileSync(new URL('../native/renderer.mjs',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'');const container={innerHTML:'',textContent:'',dataset:{},querySelectorAll:()=>[]};let sanitized=0;
   const ctx={crypto:webcrypto,marked,DOMPurify:{sanitize:s=>{sanitized++;return s;}},renderMathInElement:()=>{}};vm.runInNewContext(code,ctx);ctx.renderResearchMarkdown(container,'GOALLOOPMATHPLACEHOLDER999END\n\n\\(x^2\\)\n\n```js\nconst x = "$a$";\n```');assert.match(container.innerHTML,/GOALLOOPMATHPLACEHOLDER999END/);assert.match(container.innerHTML,/\\\(x\^2\\\)/);assert.match(container.innerHTML,/\$a\$/);assert.equal(sanitized,1);ctx.marked={parse:()=>{throw new Error('parser failed');}};ctx.renderResearchMarkdown(container,'Readable raw source');assert.equal(container.textContent,'Readable raw source');
+});
+
+// Completion claims: the first claim earns one review round; the second consecutive claim ends the thinker.
+const text=turn=>turn.p.input[0].text;
+test('a completion claim earns a review round and ends on the second claim',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,recorderRetries:0});const first=await s.turn(false);assert.match(text(first),/up to 4 rounds/);
+  s.publish(s.hosts[0],first,'complete');const second=await s.turn(false,1);assert.match(text(second),/Round 2 of at most 4/);assert.match(text(second),/marked the objective complete/);
+  s.publish(s.hosts[0],second,'complete');s.record(s.hosts[0],await s.turn(true));await s.until(()=>s.store.latest(s.id));s.record(s.hosts[0],await s.turn(true,1));
+  await s.runtime.runs.get(s.id).task;const r=s.runtime.status(s.id);assert.equal(r.run.outcome,'completed');assert.equal(s.hosts[0].turns.filter(x=>!x.tracker).length,2);
+});
+test('a claim followed by continue resets, and a first claim on the last round completes',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:3});s.publish(s.hosts[0],await s.turn(false),'complete');s.publish(s.hosts[0],await s.turn(false,1),'continue');
+  const third=await s.turn(false,2);assert.doesNotMatch(text(third),/marked the objective complete/);s.publish(s.hosts[0],third,'complete');
+  const run=s.runtime.runs.get(s.id);let ended=false;run.task.then(()=>{ended=true;});
+  while(!ended){const open=s.hosts[0].turns.find(x=>x.tracker&&!x.done);if(open)s.record(s.hosts[0],open);await tick();}assert.equal(s.runtime.status(s.id).run.outcome,'completed');
+});
+test('evidence that arrives during a claimed round reopens the thinker',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);const first=await s.turn(false);s.runtime.evidence(s.id,observation());s.publish(s.hosts[0],first,'complete');
+  const second=await s.turn(false,1);assert.match(text(second),/Measured Unicode/);assert.doesNotMatch(text(second),/marked the objective complete/);
+  s.publish(s.hosts[0],second,'complete');const third=await s.turn(false,2);assert.match(text(third),/marked the objective complete/);await s.runtime.control(s.id,'stop');
+});
+test('blocked holds the thinker until evidence arrives',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'blocked');await s.until(()=>s.store.sources(s.id).length===1);
+  for(let n=0;n<20;n++)await tick();assert.equal(s.hosts[0].turns.filter(x=>!x.tracker).length,1);assert.match(JSON.stringify(s.runtime.status(s.id)),/"status":"evidence"/);
+  s.runtime.evidence(s.id,observation());const second=await s.turn(false,1);assert.match(text(second),/Measured Unicode/);await s.runtime.control(s.id,'stop');
+});
+test('evidence after the run has ended says no thinker will read it',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true));await s.runtime.runs.get(s.id).task;
+  const receipt=s.runtime.evidence(s.id,observation({expectedInputRevision:1}));assert.match(receipt.notice,/No thinker is running/);
+});
+test('evidence to a running thinker carries no notice',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);await s.turn(false);assert.equal(s.runtime.evidence(s.id,observation()).notice,undefined);await s.runtime.control(s.id,'stop');
+});
+test('continuous run pauses once every thinker has confirmed completion',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{continuous:true});assert.match(text(await s.turn(false)),/loop:complete only when/);
+  s.publish(s.hosts[0],await s.turn(false),'complete');s.publish(s.hosts[0],await s.turn(false,1),'complete');
+  await s.until(()=>s.runtime.status(s.id).state==='paused');assert.equal(s.runtime.status(s.id).run.reason,'objective_answered');
+  // The tracker keeps recording while paused, so the last round still reaches the document.
+  for(let n=0;n<200&&s.runtime.status(s.id).run.recorder.pendingSources>0;n++){const open=s.hosts[0].turns.find(x=>x.tracker&&!x.done);if(open)s.record(s.hosts[0],open);await tick();}
+  assert.equal(s.runtime.status(s.id).run.recorder.pendingSources,0);assert.equal(s.runtime.status(s.id).state,'paused');
+  // Evidence to an answered run resumes it, and the next round reads the evidence.
+  const receipt=s.runtime.evidence(s.id,observation());assert.match(receipt.notice,/resumed/);const next=await s.turn(false,2);assert.match(text(next),/Measured Unicode/);
+  assert.equal(s.runtime.status(s.id).state,'running');assert.equal(s.runtime.status(s.id).run.reason,null);await s.runtime.control(s.id,'stop');
+});
+test('evidence to a run the user paused says it waits for resume',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);const first=await s.turn(false);await s.runtime.control(s.id,'pause');s.publish(s.hosts[0],first);await s.until(()=>s.runtime.status(s.id).state==='paused');
+  assert.match(s.runtime.evidence(s.id,observation()).notice,/when it is resumed/);assert.equal(s.runtime.status(s.id).state,'paused');await s.runtime.control(s.id,'stop');
+});
+test('a blocked thinker that reaches the time limit ends as blocked',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'blocked');await s.until(()=>/"status":"evidence"/.test(JSON.stringify(s.runtime.status(s.id))));
+  const run=s.runtime.runs.get(s.id);run.reason='time_limit';await run.control('stop');await run.task;assert.equal(s.runtime.status(s.id).run.outcome,'blocked');assert.equal(s.runtime.status(s.id).run.reason,'external_evidence_required');
+});
+test('with two thinkers, one finishing leaves the other running',async t=>{
+  const s=setup(t);const choice={modelId:'gpt-6-astra',speedId:'priority',reasoning:'max'};s.runtime.start(s.id,{...cfg,thinkers:[choice,choice]});
+  const a1=await s.turn(false),b1=await s.turn(false,1);s.publish(s.hosts[0],a1,'complete');s.publish(s.hosts[0],b1,'continue');
+  const next=await s.until(()=>{const th=s.hosts[0].turns.filter(x=>!x.tracker);return th.length>=4&&th;});
+  const a2=next.find(x=>x.p.threadId===a1.p.threadId&&x!==a1),b2=next.find(x=>x.p.threadId===b1.p.threadId&&x!==b1);s.publish(s.hosts[0],a2,'complete');s.publish(s.hosts[0],b2,'continue');
+  const b3=await s.until(()=>s.hosts[0].turns.filter(x=>!x.tracker&&x.p.threadId===b1.p.threadId)[2]);assert.equal(s.hosts[0].turns.filter(x=>!x.tracker&&x.p.threadId===a1.p.threadId).length,2);assert.ok(b3);
+  assert.equal(s.runtime.status(s.id).state,'running');await s.runtime.control(s.id,'stop');
+});
+test('a result without a status marker is kept and read as continue',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);s.hosts[0].complete(await s.turn(false),'Useful finding with no marker.');const second=await s.turn(false,1);
+  assert.equal(s.store.sources(s.id).length,1);assert.equal(s.runtime.status(s.id).state,'running');
+  assert.equal(s.store.db.prepare("SELECT count(*) n FROM audit WHERE session_id=? AND type='marker_missing'").get(s.id).n,1);
+  s.hosts[0].complete(second,'Answer.\n<!-- LOOP: complete -->\nTrailing note after the marker.');const third=await s.turn(false,2);assert.match(third.p.input[0].text,/marked the objective complete/);await s.runtime.control(s.id,'stop');
 });

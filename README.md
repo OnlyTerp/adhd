@@ -12,6 +12,7 @@ Models left alone tend to grab one idea, chase it down a rabbit hole, and lose t
 - **A lossless notebook.** Sources are stored verbatim in SQLite and shown in the main document before the tracker gets to them. Tracker notes are additive.
 - **Big-picture guard.** Every round restates the objective and asks the thinker to say so when it has drifted. The tracker's first next direction names any drift it sees.
 - **Evidence feedback.** You submit attributed observations with provenance. Each round records exactly which evidence and tracker feedback it received.
+- **No early quitting.** A thinker that says the goal is answered gets one review round to check its own answer, and stops only if it claims completion again (a claim on the last allowed round ends it without the review). Evidence it has not seen reopens it, and a thinker that says it is blocked waits for evidence until the time limit, then the run ends as `blocked`. `maxRounds` is a cap, not a target. A continuous run pauses once every thinker has confirmed the answer, and new evidence resumes it. The review costs one extra thinker round per finished run.
 - **Pause, stop, recover, export.** Exports are hash-verified packages you can restore read-only on another machine.
 - **A local viewer.** A clean, live web view of the notebook that renders Markdown and KaTeX safely.
 
@@ -104,7 +105,7 @@ Other apps take the same command in their MCP settings (`command: node`, `args: 
 | `goal_loop_catalog` | Models the installed hosts actually offer |
 | `goal_loop_start` | Start a run with a goal, context and configuration (keep its `requestId` for retries) |
 | `goal_loop_status` | Lifecycle, recorder coverage and timing metrics |
-| `goal_loop_evidence` | Add an attributed observation or correction; it reaches the next round |
+| `goal_loop_evidence` | Add an attributed observation or correction; it reaches the next round (the receipt's `notice` says when the run is paused, resumed for it, or has no thinker left to read it) |
 | `goal_loop_read` | The document, sources, tracker notes or input packets |
 | `goal_loop_control` | `pause`, `resume`, `stop`, `recover_recording`, `repair_export` |
 | `goal_loop_export` | A hash-manifested research package |

@@ -43,20 +43,30 @@ command in their app's MCP settings) and restart the app.
      the thinkers need. They cannot look anything up.
    - Keep `requestId` and reuse it on retry.
    - A run is continuous until paused or stopped. Set `maxRounds` / `maxMinutes` for a
-     bounded run.
+     bounded run. `maxRounds` is a cap, not a target: a thinker can finish sooner.
 4. **Show the document.** The result has a `url` (a local page that updates live).
    If your app can open a browser pane or side panel, open it there; otherwise give
    the user the link and the `documentPath` Markdown file.
 5. **Feed evidence.** When a thinker asks for a measurement or test you can run,
-   do it, then call `goal_loop_evidence` with the result, its provenance and the
-   current `inputRevision` from `goal_loop_status`. It reaches the next round
-   without pausing anything.
+   do it. Also check the key numbers and formulas the thinkers state (a quick
+   computation catches arithmetic slips no model in the loop will). Then call
+   `goal_loop_evidence` with the result, its provenance and the current
+   `inputRevision` from `goal_loop_status`. It reaches the next round
+   without pausing anything. A thinker that marks itself `blocked` waits for
+   evidence until the time limit (status shows its `status` as `evidence`); if
+   none comes, the run ends as `blocked`. Read the receipt's `notice`: it says
+   when the run is paused, when it resumed to check your evidence, or when no
+   thinker is left to read it (start a new run if it matters).
 6. **Check in** with `goal_loop_status` (compact) or `goal_loop_read`
    (`synthesis` for the document and tracker feedback). Report findings to the user
    in your own words with the source round IDs.
-   A thinker that has fully answered the goal says so, and the run ends once the
-   tracker has recorded that round (state `draining`, then finished). That is
-   normal for an easy goal; do not restart it.
+   When a thinker claims the goal is answered, it gets one review round to check its
+   own answer; a second claim in a row ends that thinker (new evidence it has not
+   seen reopens it). A claim on the last allowed round ends it without the review.
+   A bounded run then ends once the tracker has recorded the last round (state
+   `draining`, then finished); a continuous run pauses with reason
+   `objective_answered`, and evidence you send then resumes it. That is normal for
+   an easy goal; do not restart it. The review costs one extra thinker round.
 7. **Stop** with `goal_loop_control` `stop` when the user is done, or `pause` /
    `resume`. `goal_loop_export` saves a hash-manifested package.
 
