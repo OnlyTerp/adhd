@@ -54,7 +54,7 @@ command in their app's MCP settings) and restart the app.
    `inputRevision` from `goal_loop_status`. It reaches the next round
    without pausing anything. A thinker that marks itself `blocked` waits for
    evidence until the time limit (status shows its `status` as `evidence`); if
-   none comes, the run ends as `blocked`. Read the receipt's `notice`: it says
+   none comes, the run ends as `blocked` (on the last allowed round it ends at once). Read the receipt's `notice`: it says
    when the run is paused, when it resumed to check your evidence, or when no
    thinker is left to read it (start a new run if it matters).
 6. **Check in** with `goal_loop_status` (compact) or `goal_loop_read`

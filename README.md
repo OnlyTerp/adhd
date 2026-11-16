@@ -6,13 +6,29 @@ ADHD is a deep-research loop for AI models. A thinker model does nothing but thi
 
 Models left alone tend to grab one idea, chase it down a rabbit hole, and lose the big picture. ADHD lets the thinker wander as far as it likes, and keeps the objective in front of it every round. Evidence you supply (test results, measurements, corrections) reaches the next round without pausing it.
 
+![The live research notebook: objective, thinker and tracker, the document with every claim linked to its round, and the activity feed](media/adhd-notebook.png)
+
+<sub>The live notebook (a demo session).</sub>
+
+## Quick start
+
+You need **Node.js 24 or newer** and at least one signed-in backend: Claude Code, the Codex CLI, the Devin CLI (its `swe-2` models are free), or any OpenAI-compatible endpoint such as a local Ollama.
+
+```bash
+git clone https://github.com/OnlyTerp/adhd.git
+claude mcp add -s user adhd -- node "$PWD/adhd/native/mcp.mjs"
+mkdir -p ~/.claude/skills && cp -r adhd/skill/adhd ~/.claude/skills/
+```
+
+Restart your agent app and ask it to "run ADHD on" a hard question. It reads the catalog of models you have, starts the loop, opens the live notebook and feeds results back as evidence. The repository ships with its viewer assets built, so no `npm install` is needed to use it. Other apps: see [Use from an agent](#use-from-an-agent-mcp--skill).
+
 ## What it does
 
 - **Uninterrupted thinking.** The next round starts as soon as the last one is saved, usually a few milliseconds later. Recording, exports, evidence and the tracker never gate it.
 - **A lossless notebook.** Sources are stored verbatim in SQLite and shown in the main document before the tracker gets to them. Tracker notes are additive.
 - **Big-picture guard.** Every round restates the objective and asks the thinker to say so when it has drifted. The tracker's first next direction names any drift it sees.
 - **Evidence feedback.** You submit attributed observations with provenance. Each round records exactly which evidence and tracker feedback it received.
-- **No early quitting.** A thinker that says the goal is answered gets one review round to check its own answer, and stops only if it claims completion again (a claim on the last allowed round ends it without the review). Evidence it has not seen reopens it, and a thinker that says it is blocked waits for evidence until the time limit, then the run ends as `blocked`. `maxRounds` is a cap, not a target. A continuous run pauses once every thinker has confirmed the answer, and new evidence resumes it. The review costs one extra thinker round per finished run.
+- **No early quitting.** A thinker that says the goal is answered gets one review round to check its own answer, and stops only if it claims completion again (a claim on the last allowed round ends it without the review; `blocked` on the last round ends the run as `blocked` at once). Evidence it has not seen reopens it, and a thinker that says it is blocked waits for evidence until the time limit, then the run ends as `blocked`. `maxRounds` is a cap, not a target. A continuous run pauses once every thinker has confirmed the answer, and new evidence resumes it. The review costs one extra thinker round per finished run.
 - **Pause, stop, recover, export.** Exports are hash-verified packages you can restore read-only on another machine.
 - **A local viewer.** A clean, live web view of the notebook that renders Markdown and KaTeX safely.
 
@@ -46,7 +62,7 @@ A selection is `{"backend", "modelId", "speedId", "reasoning"}` with values from
 
 **Defaults.** Thinkers think at max effort where the backend can set it. With no thinkers named, ADHD uses the strongest installed model whose plan is not used up (Astra, then Opus, then the first model listed); the catalog shows the Codex plan's usage. The tracker only organizes, so it defaults to something cheap: Terra with a Codex thinker, Sonnet at medium effort with a Claude thinker, otherwise the thinker's own model.
 
-## Install
+## Develop
 
 ```bash
 git clone https://github.com/OnlyTerp/adhd.git
@@ -56,7 +72,7 @@ npm run build
 npm test
 ```
 
-## Run
+## Run from the command line
 
 Write a spec file:
 
@@ -115,7 +131,7 @@ The owning agent runs tests and retrieval itself, then submits the results as ev
 ## Honest limits
 
 - Workers get no tools. Codex and Claude attest that; the Devin profile launches its tool-less agent and fails any turn that tries a tool. That is not proof that every host feature is excluded.
-- Only the `codex`, `claude` and `devin` backends have run live. The OpenAI-compatible backend is tested against a local fake server only.
+- Only the `codex`, `claude` and `devin` backends have run live, and live runs so far were on Windows. The test suite runs on Linux, macOS and Windows in CI. The OpenAI-compatible backend is tested against a local fake server only.
 - The harness that drives ADHD cannot lend it its own model: ADHD runs models it can start itself.
 - Timing metrics measure this controller, not provider inference speed or cost.
 - Claude effort is requested, not reported back by the CLI. Devin and many endpoints cannot set effort at all. Claude reports the model at the first turn, so a mismatch fails that turn after inference has started.
