@@ -1,0 +1,16 @@
+.thinker-settings{margin-top:10px;border:1px solid var(--edge);border-radius:var(--r-md);background:var(--glass-soft);font-size:13px;color:var(--text-2);transition:background .25s var(--ease),border-color .25s}
+.thinker-settings[open]{background:transparent}
+.thinker-settings summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:40px;padding:0 12px;font-weight:550;color:var(--text);border-radius:inherit}
+.thinker-settings summary::-webkit-details-marker{display:none}
+.thinker-settings summary:hover{background:var(--hover)}
+.thinker-settings summary:after{content:"";flex:none;width:7px;height:7px;border-right:1.6px solid var(--text-3);border-bottom:1.6px solid var(--text-3);transform:rotate(45deg) translateY(-2px);transition:transform .25s var(--ease)}
+.thinker-settings[open] summary:after{transform:rotate(-135deg) translate(-2px,-1px)}
+.thinker-settings-body{padding:4px 12px 12px;display:grid;gap:10px;animation:reveal .35s var(--ease) both}
+.thinker-settings label{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);align-items:center;gap:10px;font-size:13px;color:var(--text-2)}
+.thinker-settings select,.thinker-settings input{appearance:none;-webkit-appearance:none;width:100%;min-width:0;height:34px;padding:0 10px;border-radius:9px;border:1px solid var(--edge);background:var(--glass-soft);color:var(--text);font:13px var(--font);transition:border-color .2s,box-shadow .2s}
+.thinker-settings select{padding-right:26px;background-image:linear-gradient(45deg,transparent 50%,var(--text-3) 50%),linear-gradient(135deg,var(--text-3) 50%,transparent 50%);background-position:calc(100% - 15px) 15px,calc(100% - 10px) 15px;background-size:5px 5px;background-repeat:no-repeat}
+.thinker-settings select option{background:var(--bg);color:var(--text)}
+.thinker-settings select:focus,.thinker-settings input:focus{outline:none;border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-soft)}
+.thinker-settings select:disabled,.thinker-settings input:disabled{opacity:.55;cursor:not-allowed}
+.thinker-settings p{font-size:12px;line-height:1.5;margin:0;color:var(--text-3)}
+.thinker-settings strong{font-size:12px;font-weight:650;letter-spacing:.04em;color:var(--text-2);margin-top:4px}

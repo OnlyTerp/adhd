@@ -1,0 +1,25 @@
+{
+  "name": "adhd",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "npm run build:ui && npm run build:native",
+    "build:ui": "node scripts/build-ui.mjs",
+    "build:native": "node native/build-browser.mjs",
+    "package:worker": "node scripts/build.mjs",
+    "studio": "node native/cli.mjs",
+    "mcp": "node native/mcp.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "marked": "18.2.0",
+    "dompurify": "3.4.18",
+    "katex": "0.19.1"
+  },
+  "description": "Deep research loop for AI models: uninterrupted tool-free thinkers, an additive tracker and a lossless notebook.",
+  "engines": {
+    "node": ">=24"
+  }
+}
