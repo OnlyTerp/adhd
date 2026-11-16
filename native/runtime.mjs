@@ -244,6 +244,8 @@ class ResearchRun {
     }
     if(claim==='complete'&&a.claims>=2){a.done=true;return;}
     if(claim!=='blocked')return;
+    // On the last allowed round no later round could read the evidence: end as blocked now.
+    if(this.config.maxRounds!==null&&a.round>=this.config.maxRounds){if(!this.reason)this.reason='external_evidence_required';a.done=true;return;}
     a.waiting='evidence';a.inflight=false;this.pauseReady();this.persist();this.store.audit(this.id,'thinker','waiting_for_evidence',{thinker:a.index,round:a.round});
     while(!this.stopIntent&&this.state==='running'&&this.store.packet(this.id).revision===seenRevision)await this.wait();
     if(this.stopIntent&&this.reason==='time_limit')this.reason='external_evidence_required';

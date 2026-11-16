@@ -317,3 +317,12 @@ test('a result without a status marker is kept and read as continue',async t=>{
   assert.equal(s.store.db.prepare("SELECT count(*) n FROM audit WHERE session_id=? AND type='marker_missing'").get(s.id).n,1);
   s.hosts[0].complete(second,'Answer.\n<!-- LOOP: complete -->\nTrailing note after the marker.');const third=await s.turn(false,2);assert.match(third.p.input[0].text,/marked the objective complete/);await s.runtime.control(s.id,'stop');
 });
+test('a blocked round is recorded while the thinker waits for evidence',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);s.publish(s.hosts[0],await s.turn(false),'blocked');
+  const tracker=await s.turn(true);assert.match(JSON.stringify(s.runtime.status(s.id)),/"status":"evidence"/);s.record(s.hosts[0],tracker);await s.until(()=>s.store.latest(s.id));
+  assert.equal(s.runtime.status(s.id).run.recorder.pendingSources,0);await s.runtime.control(s.id,'stop');
+});
+test('blocked on the last allowed round ends as blocked at once',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'blocked');s.record(s.hosts[0],await s.turn(true));
+  await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.outcome,'blocked');
+});
