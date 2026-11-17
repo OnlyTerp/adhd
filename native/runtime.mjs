@@ -9,6 +9,8 @@ const bytes=s=>Buffer.byteLength(s);
 // or many (its output is the notes and the bounded ledger), so each turn takes every pending
 // source up to a size bound instead of a fixed handful. Several thinkers then cannot outrun it.
 const TRACKER_SOURCES_PER_BATCH=16;
+// When maxMinutes runs out, thinkers stop at once but the tracker gets this long to record what they already published.
+const TIME_LIMIT_DRAIN_MS=15*60000;
 // Start a fresh tracker thread before the backend's own context compaction fires mid-turn, which
 // loses the prompt cache and stalls the turn. Ledger JSON is ID-dense (about 0.42-0.49 tokens per
 // byte measured on Sonnet), so a real run compacted at about 380 KB of history. The reserve covers
@@ -90,10 +92,23 @@ class ResearchRun {
     this.termination={status:'pending'};this.recoveryStartedAt=previous?new Date().toISOString():null;
     this.store.audit(id,'host',previous?'recording_recovery':'starting',{config,epoch:this.epoch});this.persist();
     const minutes=previous?10:config.maxMinutes;
-    this.timer=minutes?setTimeout(()=>{this.reason='time_limit';void this.control('stop');},minutes*60000):null;
+    this.drainMs=TIME_LIMIT_DRAIN_MS;
+    this.timer=minutes?setTimeout(()=>this.onTimeLimit(),minutes*60000):null;
+  }
+  // The time limit ends thinking, not recording: interrupt thinker turns, then let the tracker drain within a bounded window.
+  // Recovery, admission and paused runs keep the hard stop.
+  onTimeLimit(){
+    if(this.finished||this.stopIntent||this.timeUp)return;
+    if(this.recordOnly||!['running','draining'].includes(this.state)){this.reason='time_limit';void this.control('stop');return;}
+    if(this.state==='running')this.reason='time_limit';
+    this.timeUp=true;this.drain={until:new Date(Date.now()+this.drainMs).toISOString(),capHit:false};
+    this.store.audit(this.id,'host','time_limit',{action:'drain',drainMs:this.drainMs,state:this.state});
+    for(const a of this.actors)if(a.role==='thinker'&&a.pending){a.pending.stopIntent=true;if(a.pending.turnId)void this.client.request('turn/interrupt',{threadId:a.threadId,turnId:a.pending.turnId},{timeoutMs:1200}).catch(()=>{});}
+    this.persist();this.wake();
+    this.timer=setTimeout(()=>{if(this.finished||this.stopIntent)return;this.drain.capHit=true;this.reason='time_limit';this.store.audit(this.id,'host','drain_limit',{pending:this.store.pending(this.id).n});void this.control('stop');},this.drainMs);
   }
   detail(){
-    return {startedAt:this.startedAt,finishedAt:this.finishedAt??null,recoveryStartedAt:this.recoveryStartedAt,error:this.error,reason:this.reason,outcome:this.outcome,termination:this.termination,host:this.host??null,hostConnected:Boolean(this.client&&!this.closing&&!this.finished),receipts:this.receipts,toolCalls:this.toolCalls,toolBoundary:'tools restricted; observed calls counted',trackerBusy:Boolean(this.trackTask),recorder:this.store.recorderStatus(this.id,this.recorder),metrics:this.metrics,thinkers:this.actors.filter(a=>a.role==='thinker').map(a=>({thinker:a.index,round:a.round,status:a.inflight?'thinking':a.done?'finished':a.waiting??'ready'})),drafts:this.actors.filter(a=>a.role==='thinker'&&a.pending).map(a=>({thinker:a.index,text:[...a.pending.buckets.values()].flatMap(b=>[...b.items.values()].map(i=>i.text)).join('\n\n').slice(-20000)}))};
+    return {startedAt:this.startedAt,finishedAt:this.finishedAt??null,drain:this.drain??null,recoveryStartedAt:this.recoveryStartedAt,error:this.error,reason:this.reason,outcome:this.outcome,termination:this.termination,host:this.host??null,hostConnected:Boolean(this.client&&!this.closing&&!this.finished),receipts:this.receipts,toolCalls:this.toolCalls,toolBoundary:'tools restricted; observed calls counted',trackerBusy:Boolean(this.trackTask),recorder:this.store.recorderStatus(this.id,this.recorder),metrics:this.metrics,thinkers:this.actors.filter(a=>a.role==='thinker').map(a=>({thinker:a.index,round:a.round,status:a.inflight?'thinking':a.done?'finished':a.waiting??'ready'})),drafts:this.actors.filter(a=>a.role==='thinker'&&a.pending).map(a=>({thinker:a.index,text:[...a.pending.buckets.values()].flatMap(b=>[...b.items.values()].map(i=>i.text)).join('\n\n').slice(-20000)}))};
   }
   persist(){this.store.save(this.id,this.state,this.detail(),this.epoch);}
   wake(){for(const fn of this.waiters)fn();this.waiters.clear();}
@@ -163,7 +178,7 @@ class ResearchRun {
       await thinking;
     }
     if(this.stopIntent||this.finished)return this.stopTask;
-    this.outcome=this.recordOnly?this.outcome:this.reason==='round_limit'?'limited':this.reason==='external_evidence_required'?'blocked':'completed';
+    this.outcome=this.recordOnly?this.outcome:['round_limit','time_limit'].includes(this.reason)?'limited':this.reason==='external_evidence_required'?'blocked':'completed';
     this.state='draining';this.persist();await this.trackerBoot;await this.track();
     if(!this.stopIntent&&!this.finished){const pending=this.store.pending(this.id);await this.finish(pending.n||pending.evidencePending?'recording_failed':this.outcome);}else await this.stopTask;
   }
@@ -193,7 +208,7 @@ class ResearchRun {
     else{const e=new Error('Turn '+b.complete.status+': '+(b.complete.error?.message??'interrupted or failed'));e.code=b.complete.status==='interrupted'?'TURN_INTERRUPTED':'TURN_FAILED';e.turnEnded=true;e.expectedStop=e.code==='TURN_INTERRUPTED'&&pending.stopIntent;pending.reject(e);}
   }
   async turn(a,prompt,outputSchema,metadata={}){
-    if(this.stopIntent||this.finished||this.closing){const e=new Error('Admission closed');e.expectedStop=true;throw e;}
+    if(this.stopIntent||this.finished||this.closing||(this.timeUp&&a.role==='thinker')){const e=new Error('Admission closed');e.expectedStop=true;throw e;}
     if(a.pending)throw new Error('Concurrent turn on one actor');
     let resolve,reject;const completion=new Promise((yes,no)=>{resolve=yes;reject=no;});completion.catch(()=>{});
     const pending={operationId:metadata.operationId??randomUUID(),turnId:null,buckets:new Map(),resolve,reject,stopIntent:false};a.pending=pending;
@@ -215,7 +230,7 @@ class ResearchRun {
   async think(a){
     const w=this.store.workspace(this.id);
     try{
-      while(a.round<(this.config.maxRounds??Infinity)&&!a.done&&!this.stopIntent){
+      while(a.round<(this.config.maxRounds??Infinity)&&!a.done&&!this.stopIntent&&!this.timeUp){
         if(['paused','pausing'].includes(this.state)){a.waiting='paused';this.pauseReady();await this.wait();continue;}
         if(this.state!=='running')break;
         const operationId=randomUUID();
@@ -256,8 +271,8 @@ class ResearchRun {
     // On the last allowed round no later round could read the evidence: end as blocked now.
     if(this.config.maxRounds!==null&&a.round>=this.config.maxRounds){if(!this.reason)this.reason='external_evidence_required';a.done=true;return;}
     a.waiting='evidence';a.inflight=false;this.pauseReady();this.persist();this.store.audit(this.id,'thinker','waiting_for_evidence',{thinker:a.index,round:a.round});
-    while(!this.stopIntent&&this.state==='running'&&this.store.packet(this.id).revision===seenRevision)await this.wait();
-    if(this.stopIntent&&this.reason==='time_limit')this.reason='external_evidence_required';
+    while(!this.stopIntent&&!this.timeUp&&this.state==='running'&&this.store.packet(this.id).revision===seenRevision)await this.wait();
+    if((this.stopIntent||this.timeUp)&&this.reason==='time_limit')this.reason='external_evidence_required';
   }
   hasWork(){const p=this.store.pending(this.id);return p.n>0||p.evidencePending;}
   hasRecordingWork(){const p=this.store.pending(this.id);return p.n>0||((this.recordOnly||this.forceRecord||this.state==='draining')&&p.evidencePending);}

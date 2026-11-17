@@ -45,6 +45,9 @@ command in their app's MCP settings) and restart the app.
    - Keep `requestId` and reuse it on retry.
    - A run is continuous until paused or stopped. Set `maxRounds` / `maxMinutes` for a
      bounded run. `maxRounds` is a cap, not a target: a thinker can finish sooner.
+   - Put every fact you already have in `context`, marked measured or assumed. On
+     a long run, thinkers keep building on whatever the context implies, so a
+     wrong number there costs many rounds.
 4. **Show the document.** The result has a `url` (a local page that updates live).
    If your app can open a browser pane or side panel, open it there; otherwise give
    the user the link and the `documentPath` Markdown file.
@@ -53,7 +56,18 @@ command in their app's MCP settings) and restart the app.
    computation catches arithmetic slips no model in the loop will). Then call
    `goal_loop_evidence` with the result, its provenance and the current
    `inputRevision` from `goal_loop_status`. It reaches the next round
-   without pausing anything. A thinker that marks itself `blocked` waits for
+   without pausing anything.
+   - Fields: `text` (the result itself), `provenance` (the command, file or
+     tool), `sourceRevision` (the commit or build measured), `observedAt`,
+     `status` (`observed` = you measured it, `reported`, `hypothesis`, `stale`),
+     a `requestId` to retry with, and `expectedInputRevision`. Add `supersedes`
+     with an evidence ID to correct an earlier item.
+   - Take `observedAt` from the real clock (`date -u`), never from memory.
+   - Put related measurements in one item, with the question it settles and
+     the decision it changes. Don't send a stream of small items: each one is
+     re-read by every thinker and by the tracker.
+   - Say plainly what an item does not show, such as one sample or a proxy
+     build, so the thinkers don't overreach. A thinker that marks itself `blocked` waits for
    evidence until the time limit (status shows its `status` as `evidence`); if
    none comes, the run ends as `blocked` (on the last allowed round it ends at once). Read the receipt's `notice`: it says
    when the run is paused, when it resumed to check your evidence, or when no
@@ -61,6 +75,15 @@ command in their app's MCP settings) and restart the app.
 6. **Check in** with `goal_loop_status` (compact) or `goal_loop_read`
    (`synthesis` for the document and tracker feedback). Report findings to the user
    in your own words with the source round IDs.
+   - On a long run the document grows to megabytes. To see only what is new,
+     read `revisions` with `after` set to the `nextCursor` of the last page you
+     read. Each revision is one tracker note plus the ledger as of that note.
+   - With several thinkers, `recordedCount` trails `sourceCount` mid-run. The
+     tracker records several rounds per turn, and nothing is lost while it
+     catches up.
+   - Tracker notes are organization, not verification. Before you tell the user
+     something is true, trace it to an evidence item or your own check. Keep
+     measured facts apart from the thinkers' proposals.
    When a thinker claims the goal is answered, it gets one review round to check its
    own answer; a second claim in a row ends that thinker (new evidence it has not
    seen reopens it). A claim on the last allowed round ends it without the review.
@@ -68,8 +91,16 @@ command in their app's MCP settings) and restart the app.
    `draining`, then finished); a continuous run pauses with reason
    `objective_answered`, and evidence you send then resumes it. That is normal for
    an easy goal; do not restart it. The review costs one extra thinker round.
+   - When `maxMinutes` runs out, thinker turns stop at once, but the tracker
+     keeps recording the rounds already published for up to 15 more minutes.
+     During that time the state is `draining` and `run.drain.until` shows the
+     deadline. Let it finish. If the window closes first (`run.drain.capHit`),
+     the unrecorded rounds stay saved, and `goal_loop_control`
+     `recover_recording` records them later.
 7. **Stop** with `goal_loop_control` `stop` when the user is done, or `pause` /
-   `resume`. `goal_loop_export` saves a hash-manifested package.
+   `resume`. `stop` is immediate: it also interrupts the tracker. Rounds it has
+   not recorded stay pending until `recover_recording`. `goal_loop_export`
+   saves a hash-manifested package.
 
 ## Usage safety
 

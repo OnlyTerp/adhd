@@ -16,6 +16,17 @@ function turn(text){
   if(kw==='tool'){out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'tool_use',name:'Bash'}}});return;}
   if(kw==='slow'){out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text'}}});out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'partial '}}});return;}
   if(kw==='limit'){out({type:'result',subtype:'success',is_error:true,result:'Claude AI usage limit reached'});active=null;return;}
+  // A StructuredOutput call the CLI rejects as unparseable; 'brokenjson' lacks only its last brace, 'cutjson' is cut mid-string.
+  if(schema&&(kw==='brokenjson'||kw==='cutjson')){
+    const full=JSON.stringify({markdown:'## Note\n\nRepaired "quoted" {braces} [kept].',feedback:{findings:[],questions:[],nextDirections:['next']}});
+    const sent=kw==='brokenjson'?full.slice(0,-1):full.slice(0,20);
+    out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'tool_use',name:'StructuredOutput',input:{}}}});
+    for(let i=0;i<sent.length;i+=16)out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'input_json_delta',partial_json:sent.slice(i,i+16)}}});
+    out({type:'user',message:{role:'user',content:[{type:'tool_result',is_error:true,content:'<tool_use_error>InputValidationError: StructuredOutput was called with input that could not be parsed as JSON.</tool_use_error>'}]}});
+    // The CLI's own retry: it answers after a while unless interrupted first.
+    if(kw==='cutjson')setTimeout(()=>{if(active==='cutjson')result({structured_output:{markdown:'## Rewritten',feedback:{findings:[],questions:[],nextDirections:[]}}});},30);
+    return;
+  }
   if(schema){result({structured_output:{markdown:'## Note\n\nOrganized.',feedback:{findings:[],questions:[],nextDirections:[]}}});return;}
   out({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'thinking'}}});
   out({type:'assistant',message:{model,content:[{type:'thinking',thinking:'SECRET-THOUGHT'}]}});

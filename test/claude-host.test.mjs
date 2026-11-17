@@ -4,7 +4,7 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {ClaudeHost, childEnvironment} from '../native/claude.mjs';
+import {ClaudeHost, childEnvironment, repairStructured} from '../native/claude.mjs';
 import {HostRouter} from '../native/router.mjs';
 import {Store} from '../native/store.mjs';
 import {Runtime, configuration} from '../native/runtime.mjs';
@@ -93,6 +93,36 @@ test('tracker threads fix the structured output schema and usage limits fail vis
   await assert.rejects(host.request('turn/start', {threadId: tr.threadId, input: [{type: 'text', text: 'x'}]}), /fixes its output schema/);
   const limit = await run(tr.threadId, '[limit]', trackerSchema);
   assert.equal(limit.done.status, 'failed'); assert.match(limit.done.error.message, /usage limit/);
+});
+
+test('a tracker call rejected only for its missing closing brace is kept instead of rewritten', async t => {
+  const {host, run} = await setupHost(t);
+  const tr = await host.thread(sonnet, 'tracker', undefined, {outputSchema: trackerSchema});
+  const r = await run(tr.threadId, 'organize [brokenjson]', trackerSchema);
+  assert.equal(r.done.status, 'completed');
+  const kept = JSON.parse(r.items.find(e => e.method === 'item/completed').params.item.text);
+  assert.equal(kept.markdown, '## Note\n\nRepaired "quoted" {braces} [kept].'); assert.deepEqual(kept.feedback.nextDirections, ['next']);
+  // Text cut mid-string is not guessed at: the CLI's own retry answers.
+  const cut = await run(tr.threadId, 'organize [cutjson]', trackerSchema);
+  assert.equal(cut.done.status, 'completed');
+  assert.equal(JSON.parse(cut.items.find(e => e.method === 'item/completed').params.item.text).markdown, '## Rewritten');
+  const after = await run(tr.threadId, 'organize [normal]', trackerSchema);
+  assert.equal(after.done.status, 'completed', 'the thread keeps working after a repair');
+});
+
+test('structured repair adds only missing closers, and only into the tracker shape', () => {
+  const ok = JSON.stringify({markdown: 'a "}" b', feedback: {findings: [], questions: [], nextDirections: ['x']}});
+  assert.deepEqual(repairStructured(ok.slice(0, -1)), JSON.parse(ok));
+  assert.deepEqual(repairStructured(ok.slice(0, -2)), JSON.parse(ok));
+  assert.equal(repairStructured(ok), null, 'nothing to repair');
+  // The real rejected call: nextDirections written as a JSON string, and the last brace missing.
+  const stringified = '{"markdown":"m","feedback":{"findings":[],"questions":[],"nextDirections":"[\\"go \\\\\\"there\\\\\\"\\"]"}';
+  assert.deepEqual(repairStructured(stringified).feedback.nextDirections, ['go "there"']);
+  assert.equal(repairStructured('{"markdown":"m","feedback":{"findings":[],"questions":[],"nextDirections":"not json"}'), null, 'an undecodable string stays invalid');
+  assert.equal(repairStructured(ok.slice(0, -3)), null, 'a cut value is not completed');
+  assert.equal(repairStructured('{"markdown":"m","feedback":{"findings":[{"a":[1]}'), null, 'more than two closers missing');
+  assert.equal(repairStructured('{"other":1'), null, 'wrong shape');
+  assert.equal(repairStructured('{"markdown":"m"]'), null, 'mismatched closer');
 });
 
 test('child environment drops API-key billing and parent session variables', () => {

@@ -56,6 +56,26 @@ export function childEnvironment(env = process.env, allowApiKey = env.GOAL_LOOP_
   return out;
 }
 
+// On long StructuredOutput calls Claude sometimes drops the last closing bracket. The CLI then rejects the call as
+// unparseable and has the model rewrite all of it blind: one measured 22 KB tracker turn took three ~100 s attempts.
+// Repair only that defect: at most two missing closers after a complete value, and only into the tracker's shape.
+export function repairStructured(raw) {
+  let inString = false, escaped = false; const open = [];
+  for (const c of raw) {
+    if (inString) { if (escaped) escaped = false; else if (c === '\\') escaped = true; else if (c === '"') inString = false; continue; }
+    if (c === '"') inString = true; else if (c === '{') open.push('}'); else if (c === '[') open.push(']');
+    else if ((c === '}' || c === ']') && open.pop() !== c) return null;
+  }
+  if (inString || !open.length || open.length > 2) return null;
+  let value; try { value = JSON.parse(raw.trimEnd() + open.reverse().join('')); } catch { return null; }
+  // The same calls also write a nested array as a JSON string ("nextDirections": "[\"...\"]"); decode it back.
+  const decoded = (v, check) => { if (typeof v !== 'string') return v; try { const d = JSON.parse(v); return check(d) ? d : v; } catch { return v; } };
+  const f = value && typeof value === 'object' ? (value.feedback = decoded(value.feedback, d => d && typeof d === 'object' && !Array.isArray(d))) : null;
+  if (f && typeof f === 'object') for (const k of ['findings', 'questions', 'nextDirections']) f[k] = decoded(f[k], Array.isArray);
+  return typeof value?.markdown === 'string' && f && typeof f === 'object' && ['findings', 'questions', 'nextDirections'].every(k => Array.isArray(f[k])) ? value : null;
+}
+const RAW_STRUCTURED_LIMIT = 4194304;
+
 class ClaudeThread {
   constructor(host, {selection, instructions, cwd, outputSchema}) {
     this.host = host; this.selection = selection; this.id = 'claude-' + randomUUID();
@@ -130,9 +150,19 @@ class ClaudeThread {
           t.error = 'Research tool boundary crossed: ' + b.name; this.interrupt(t.id);
         }
         if (b.type === 'text' && !this.schema) t.current = `${t.id}:${++t.items}`;
+        if (b.type === 'tool_use' && this.schema && b.name === 'StructuredOutput') t.raw = '';
       } else if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta' && !this.schema && t.current) {
         this.notify(t.id, 'item/agentMessage/delta', {itemId: t.current, delta: e.delta.text ?? ''});
+      } else if (e.type === 'content_block_delta' && e.delta?.type === 'input_json_delta' && typeof t.raw === 'string') {
+        t.raw = t.raw.length + (e.delta.partial_json ?? '').length > RAW_STRUCTURED_LIMIT ? null : t.raw + (e.delta.partial_json ?? '');
       }
+      return;
+    }
+    // The CLI reports a rejected StructuredOutput call as a tool result. If the rejected text needs only its missing
+    // closing brackets, keep it and interrupt the blind rewrite the CLI has already asked for.
+    if (m.type === 'user' && this.schema && !t.salvaged && typeof t.raw === 'string') {
+      const rejected = (m.message?.content ?? []).some(c => c.type === 'tool_result' && c.is_error && /could not be parsed as JSON/.test(typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? '')));
+      if (rejected) { const value = repairStructured(t.raw); t.raw = undefined; if (value) { t.salvaged = JSON.stringify(value); this.repairs = (this.repairs ?? 0) + 1; this.interrupt(t.id); } }
       return;
     }
     // With partial messages on, each completed content block arrives as its own
@@ -147,6 +177,7 @@ class ClaudeThread {
     if (m.type === 'result') {
       this.turn = null; let status, error = null;
       if (t.error) { status = 'failed'; error = t.error; }
+      else if (t.salvaged) { status = 'completed'; this.notify(t.id, 'item/completed', {item: {type: 'agentMessage', id: `${t.id}:structured`, text: t.salvaged}}); }
       else if (t.interrupted) status = 'interrupted';
       else if (m.subtype === 'success' && !m.is_error) {
         status = 'completed';

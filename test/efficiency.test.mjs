@@ -197,3 +197,39 @@ test('a run will not start on an exhausted plan unless credits are allowed', asy
   assert.match(JSON.stringify(s.runtime.status(s.id).run), /does not spend purchased credits/);
   assert.equal(s.hosts.at(-1).turns.length, 0, 'no paid turn was started');
 });
+
+test('the time limit stops thinkers but lets the tracker record what they already published', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
+  s.publish(await s.turn(false, 0));
+  const recording = await s.turn(true, 0), thinking = await s.turn(false, 1);
+  t.mock.timers.tick(60000);
+  await s.until(() => thinking.done);
+  assert.equal(recording.done, false, 'the tracker turn in progress is not interrupted');
+  await s.until(() => s.runtime.status(s.id).state === 'draining');
+  s.record(recording);
+  await s.until(() => s.runtime.status(s.id).state === 'limited');
+  const run = s.runtime.status(s.id).run;
+  assert.equal(run.recordedCount, run.sourceCount, 'every published round is recorded');
+  assert.equal(run.reason, 'time_limit'); assert.equal(run.drain.capHit, false);
+  assert.equal(s.hosts.at(-1).turns.filter(x => !x.tracker).length, 2, 'no thinker round starts after the limit');
+});
+
+test('a drain that outlasts its window is stopped and leaves the unrecorded rounds pending', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
+  s.publish(await s.turn(false, 0));
+  const recording = await s.turn(true, 0);
+  t.mock.timers.tick(60000);
+  await s.until(() => s.runtime.status(s.id).state === 'draining');
+  t.mock.timers.tick(15 * 60000);
+  await s.until(() => recording.done && s.runtime.status(s.id).state === 'limited');
+  const run = s.runtime.status(s.id).run;
+  assert.equal(run.drain.capHit, true); assert.equal(run.recordedCount, 0); assert.equal(run.recorder.status, 'pending');
+  assert.deepEqual(s.audit('drain_limit').map(x => x.pending), [1]);
+});
+
+test('a misnamed evidence field is rejected with the right field names', async t => {
+  const s = setup(t);
+  assert.throws(() => s.store.submitEvidence(s.id, {requestId: 'e1', expectedInputRevision: 0, evidence: 'x', provenance: 'p', sourceRevision: 'r', status: 'observed', observedAt: '2026-01-01T00:00:00Z'}), /Unknown evidence field evidence; evidence fields are text, provenance/);
+});

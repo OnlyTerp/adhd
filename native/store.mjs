@@ -61,9 +61,12 @@ export class Store {
     },true);
   }
   submitEvidence(id,{requestId,expectedInputRevision,...payload}){
-    this.workspace(id);bounded(requestId,'evidence requestId',128);bounded(payload.text,'evidence text',100000);bounded(payload.provenance,'provenance',4000);bounded(payload.sourceRevision,'source revision',256);
-    if(!['observed','reported','hypothesis','stale'].includes(payload.status)||typeof payload.observedAt!=='string'||!Number.isFinite(Date.parse(payload.observedAt)))throw new Error('Evidence needs status and an observation time');
-    if(Object.keys(payload).some(k=>!['text','provenance','sourceRevision','observedAt','status','supersedes'].includes(k)))throw new Error('Unknown evidence field');
+    this.workspace(id);
+    // Name the field at fault: a caller that guesses a field name (say "evidence" for "text") should learn the right one from the error.
+    const fields=['text','provenance','sourceRevision','observedAt','status','supersedes'],unknown=Object.keys(payload).filter(k=>!fields.includes(k));
+    if(unknown.length)throw new Error('Unknown evidence field '+unknown.join(', ')+'; evidence fields are text, provenance, sourceRevision, observedAt, status and optional supersedes');
+    bounded(requestId,'evidence requestId (a retry key, at most 128 bytes)',128);bounded(payload.text,'evidence text (the measurement or correction itself, at most 100,000 bytes)',100000);bounded(payload.provenance,'provenance (how the evidence was obtained, at most 4,000 bytes)',4000);bounded(payload.sourceRevision,'source revision (the commit, version or build measured, at most 256 bytes)',256);
+    if(!['observed','reported','hypothesis','stale'].includes(payload.status)||typeof payload.observedAt!=='string'||!Number.isFinite(Date.parse(payload.observedAt)))throw new Error('Evidence needs status (observed, reported, hypothesis or stale) and observedAt (an ISO time)');
     const hash=digest(payload);
     return this.transaction(()=>{
       const old=this.db.prepare('SELECT * FROM evidence WHERE session_id=? AND request_id=?').get(id,requestId);
