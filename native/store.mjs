@@ -112,9 +112,31 @@ export class Store {
   head(id){return this.db.prepare('SELECT count(*) revision,coalesce(max(sequence),0) sequence FROM revisions WHERE session_id=?').get(id);}
   pending(id){const r=this.db.prepare('SELECT through_source,input_revision FROM revisions WHERE session_id=? ORDER BY sequence DESC LIMIT 1').get(id),c=this.counts(id,r?.through_source??0);return {...c,evidencePending:this.counts(id).n>0&&(r?.input_revision??0)<this.packet(id).revision};}
   recorderStatus(id,recorder={}){const pending=this.pending(id);return {...recorder,status:recorder.status==='current'&&(pending.n||pending.evidencePending)?'pending':recorder.status,pendingSources:pending.n,pendingBytes:pending.bytes,oldestPendingMs:pending.oldest?Math.max(0,Date.now()-Date.parse(pending.oldest)):0,evidencePending:pending.evidencePending};}
+  // What a tracker revision covering sources up to `through` and evidence up to `inputRevision` may cite.
+  citable(id,through,inputRevision){
+    return {sources:new Set(this.db.prepare('SELECT uid FROM sources WHERE session_id=? AND sequence<=?').all(id,through).map(s=>s.uid)),evidence:new Set(this.evidence(id).filter(e=>e.input_revision<=inputRevision).map(e=>e.uid))};
+  }
+  // A tracker turn citing an ID it cannot cite (a relayed ID from another run, a typo, a later round) loses only
+  // that citation: ledger references are dropped and Markdown links become plain text. Returns what was dropped.
+  pruneCitations(id,through,inputRevision,markdown,feedback){
+    const {sources,evidence}=this.citable(id,through,inputRevision),dropped=new Set(),known=ref=>ref.startsWith('source-')?sources.has(ref):evidence.has(ref);
+    let ledger=feedback;
+    if(feedback&&Array.isArray(feedback.findings)&&Array.isArray(feedback.questions)){
+      // Trackers without schema enforcement may omit a reference list or write one ID as a string.
+      const keep=(list,set)=>{const refs=list===undefined||list===null?[]:typeof list==='string'?[list]:list;return Array.isArray(refs)?refs.filter(x=>{if(set.has(x))return true;dropped.add(String(x));return false;}):refs;};
+      const fix=item=>item&&typeof item==='object'?{...item,sourceIds:keep(item.sourceIds,sources),evidenceIds:keep(item.evidenceIds,evidence)}:item;
+      ledger={...feedback,findings:feedback.findings.map(fix),questions:feedback.questions.map(fix)};
+    }
+    let text=markdown;
+    if(typeof markdown==='string'){
+      text=markdown.replace(/\[([^\]\n]*)\]\(#((?:source|evidence)-[\w-]+)\)/g,(m,label,ref)=>{if(known(ref))return m;dropped.add(ref);return label;})
+        .replace(/\]\(#((?:source|evidence)-[\w-]+)\)/g,(m,ref)=>{if(known(ref))return m;dropped.add(ref);return ']';});
+    }
+    return {markdown:text,feedback:ledger,dropped:[...dropped]};
+  }
   validateFeedback(id,feedback,through,inputRevision){
     if(!feedback||!Array.isArray(feedback.findings)||!Array.isArray(feedback.questions)||!Array.isArray(feedback.nextDirections)||feedback.findings.length>24||feedback.questions.length>16||feedback.nextDirections.length>8||Buffer.byteLength(JSON.stringify(feedback))>32000)throw new Error('Invalid bounded feedback ledger');
-    const ids=new Set(),sources=new Set(this.db.prepare('SELECT uid FROM sources WHERE session_id=? AND sequence<=?').all(id,through).map(s=>s.uid)),evidence=new Set(this.evidence(id).filter(e=>e.input_revision<=inputRevision).map(e=>e.uid));
+    const ids=new Set(),{sources,evidence}=this.citable(id,through,inputRevision);
     for(const item of [...feedback.findings,...feedback.questions]){bounded(item.id,'claim ID',128);if(ids.has(item.id))throw new Error('Duplicate feedback ID');ids.add(item.id);bounded(item.summary??item.question,'feedback text',2000);if(!Array.isArray(item.sourceIds)||!Array.isArray(item.evidenceIds)||item.sourceIds.some(s=>!sources.has(s))||item.evidenceIds.some(e=>!evidence.has(e)))throw new Error('Unresolved feedback citation');}
     for(const f of feedback.findings)if(!['new','correction','disagreement','repetition','uncertainty'].includes(f.kind))throw new Error('Invalid finding kind');
     for(const q of feedback.questions){bounded(q.decision,'evidence decision',2000);if(!['open','answered'].includes(q.status))throw new Error('Invalid evidence request status');}

@@ -41,7 +41,7 @@ function setup(t,options={}){
     }
     async close(){if(this.closed)return {confirmed:true};if(options.deferClose)await new Promise(resolve=>{this.releaseClose=resolve;});this.closed=true;this.emit('disconnect',new Error('owned host closed'));return {confirmed:options.confirmed!==false};}
   }
-  const runtime=new Runtime(store,{clientFactory:()=>new Host()}),id=store.prepare({goal:'Investigate the measured widget result; preserve uncertainty.',context:'Initial estimate is 7.',requestId:'start'});
+  const runtime=new Runtime(store,{clientFactory:()=>new Host(),...(options.now?{now:options.now}:{})}),id=store.prepare({goal:'Investigate the measured widget result; preserve uncertainty.',context:'Initial estimate is 7.',requestId:'start'});
   t.after(async()=>{await runtime.close();store.close();rmSync(dir,{recursive:true,force:true});});
   const until=async predicate=>{for(let n=0;n<100;n++){const x=predicate();if(x)return x;await tick();}throw new Error('Expected event did not occur');};
   const turn=(tracker,index=0)=>until(()=>hosts.at(-1)?.turns.filter(x=>x.tracker===tracker)[index]);
@@ -235,7 +235,7 @@ test('evidence is idempotent, attributed, and reaches next turn without waiting 
   const source=s.store.sources(s.id)[0],tracker=await s.turn(true);const ledger={findings:[{id:'widget-result',kind:'correction',summary:'The observation contradicts the estimate.',sourceIds:[source.uid],evidenceIds:[receipt.evidenceId]}],questions:[],nextDirections:['Explain the changed result.']};s.record(s.hosts[0],tracker,ledger);await s.until(()=>s.store.latest(s.id));s.publish(s.hosts[0],second);const third=await s.turn(false,2);assert.match(third.p.input[0].text,/The observation contradicts the estimate/);assert.match(third.p.input[0].text,/'feedbackRevision'|"feedbackRevision":1/);assert.equal(s.store.sources(s.id)[1].input_revision,2);
 });
 test('invalid citations cannot enter the accepted feedback ledger',async t=>{
-  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1,recorderRetries:0});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true),{findings:[{id:'x',kind:'new',summary:'unsupported',sourceIds:['source-invented'],evidenceIds:[]}],questions:[],nextDirections:[]});await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).state,'recording_failed');assert.equal(s.store.latest(s.id),undefined);
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1,recorderRetries:0});s.publish(s.hosts[0],await s.turn(false),'complete');s.record(s.hosts[0],await s.turn(true),{findings:[{id:'x',kind:'new',summary:'unsupported',sourceIds:['source-invented'],evidenceIds:[]}],questions:[],nextDirections:[]});await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).state,'completed');assert.deepEqual(s.store.latest(s.id).feedback.findings[0].sourceIds,[],'the invented citation is dropped, the finding kept');
 });
 test('tracker thread rotates from accepted checkpoint when context budget fills',async t=>{
   const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:2,trackerContextBytes:16384});s.publish(s.hosts[0],await s.turn(false));const firstTracker=await s.turn(true);s.record(s.hosts[0],firstTracker,feedback(),'## Keep this caveat\n'+'x'.repeat(15200));await s.until(()=>s.store.latest(s.id));s.publish(s.hosts[0],await s.turn(false,1),'complete');const secondTracker=await s.turn(true,1);assert.notEqual(firstTracker.p.threadId,secondTracker.p.threadId);assert.match(secondTracker.p.input[0].text,/Keep this caveat/);s.record(s.hosts[0],secondTracker);await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.metrics.trackerRotations,1);
@@ -325,4 +325,38 @@ test('a blocked round is recorded while the thinker waits for evidence',async t=
 test('blocked on the last allowed round ends as blocked at once',async t=>{
   const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:1});s.publish(s.hosts[0],await s.turn(false),'blocked');s.record(s.hosts[0],await s.turn(true));
   await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.outcome,'blocked');
+});
+
+test('a tracker citing IDs it cannot cite loses only those citations, and the turn is recorded',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);const first=await s.turn(false);s.publish(s.hosts[0],first);
+  const tracker=await s.turn(true),own=s.store.sources(s.id)[0].uid;
+  const ledger={findings:[{id:'f1',kind:'new',summary:'Relayed from another run.',sourceIds:[own,'source-from-another-run'],evidenceIds:['evidence-from-another-run']}],questions:[],nextDirections:[]};
+  s.record(s.hosts[0],tracker,ledger,'## Notes\n\nSee [the other run](#source-from-another-run) and [this round](#'+own+').');
+  const revision=await s.until(()=>s.store.latest(s.id));
+  assert.deepEqual(revision.feedback.findings[0].sourceIds,[own]);assert.deepEqual(revision.feedback.findings[0].evidenceIds,[]);
+  assert.match(revision.markdown,/See the other run and \[this round\]\(#source-/);
+  const audit=s.store.db.prepare("SELECT data FROM audit WHERE session_id=? AND type='citations_dropped'").all(s.id).map(r=>JSON.parse(r.data));
+  assert.deepEqual(audit,[{count:2,ids:['source-from-another-run','evidence-from-another-run']}]);
+  // Failure control: the store still refuses an unknown citation passed to it directly.
+  assert.throws(()=>s.store.validateFeedback(s.id,{findings:[{id:'y',kind:'new',summary:'s',sourceIds:['source-unknown'],evidenceIds:[]}],questions:[],nextDirections:[]},revision.through_source,revision.input_revision),/Unresolved feedback citation/);
+});
+
+test('bounded thinker rounds state the elapsed share of maxMinutes',async t=>{
+  let now=Date.parse('2026-11-17T10:00:00Z');const s=setup(t,{now:()=>now});s.runtime.start(s.id,{maxRounds:4,maxMinutes:30});
+  const first=await s.turn(false);assert.match(first.p.input[0].text,/You have up to 4 rounds and 30 minutes \(a turn still running at the time limit is stopped and lost\)/);
+  now+=12.6*60000;s.publish(s.hosts[0],first);const second=await s.turn(false,1);
+  assert.match(second.p.input[0].text,/Round 2 of at most 4 \(12\.6 of 30 minutes elapsed; a turn still running at the time limit is stopped and lost\)\. /);
+});
+
+test('continuous rounds carry no clock',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{continuous:true});const first=await s.turn(false);s.publish(s.hosts[0],first);const second=await s.turn(false,1);
+  assert.doesNotMatch(first.p.input[0].text+second.p.input[0].text,/minutes elapsed|and \d+ minutes/);
+});
+
+test('a tracker ledger item with a missing or single-string reference list is normalized, not rejected',async t=>{
+  const s=setup(t);s.runtime.start(s.id,cfg);const first=await s.turn(false);s.publish(s.hosts[0],first);
+  const tracker=await s.turn(true),own=s.store.sources(s.id)[0].uid;
+  s.record(s.hosts[0],tracker,{findings:[{id:'f1',kind:'new',summary:'no refs'},{id:'f2',kind:'new',summary:'one ref',sourceIds:own,evidenceIds:null}],questions:[],nextDirections:[]});
+  const revision=await s.until(()=>s.store.latest(s.id));
+  assert.deepEqual(revision.feedback.findings.map(f=>[f.sourceIds,f.evidenceIds]),[[[],[]],[[own],[]]]);
 });

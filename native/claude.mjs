@@ -11,7 +11,10 @@ import {dirname, join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {processIdentityAsync} from './identity.mjs';
 
+// Fable 5.2 needs Claude Code 2.1.290 or newer; an older CLI fails the first turn with
+// "version ... or newer is required". Point GOAL_LOOP_CLAUDE_EXE at a newer claude.exe if needed.
 export const CLAUDE_MODELS = [
+  {id: 'claude-fable-5-2', label: 'Claude Fable 5.2'},
   {id: 'claude-opus-5-5', label: 'Claude Opus 5.5'},
   {id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5'},
 ];
@@ -66,12 +69,16 @@ export function repairStructured(raw) {
     if (c === '"') inString = true; else if (c === '{') open.push('}'); else if (c === '[') open.push(']');
     else if ((c === '}' || c === ']') && open.pop() !== c) return null;
   }
-  if (inString || !open.length || open.length > 2) return null;
+  if (inString || open.length > 2) return null;
   let value; try { value = JSON.parse(raw.trimEnd() + open.reverse().join('')); } catch { return null; }
   // The same calls also write a nested array as a JSON string ("nextDirections": "[\"...\"]"); decode it back.
-  const decoded = (v, check) => { if (typeof v !== 'string') return v; try { const d = JSON.parse(v); return check(d) ? d : v; } catch { return v; } };
+  // That can happen with every brace present too; then the decode is the whole repair.
+  let changed = false;
+  const decoded = (v, check) => { if (typeof v !== 'string') return v; try { const d = JSON.parse(v); if (!check(d)) return v; changed = true; return d; } catch { return v; } };
   const f = value && typeof value === 'object' ? (value.feedback = decoded(value.feedback, d => d && typeof d === 'object' && !Array.isArray(d))) : null;
   if (f && typeof f === 'object') for (const k of ['findings', 'questions', 'nextDirections']) f[k] = decoded(f[k], Array.isArray);
+  // A complete reply that needed no decoding was rejected for some other reason: not ours to accept.
+  if (!open.length && !changed) return null;
   return typeof value?.markdown === 'string' && f && typeof f === 'object' && ['findings', 'questions', 'nextDirections'].every(k => Array.isArray(f[k])) ? value : null;
 }
 const RAW_STRUCTURED_LIMIT = 4194304;

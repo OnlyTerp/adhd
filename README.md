@@ -127,7 +127,7 @@ Other apps take the same command in their MCP settings (`command: node`, `args: 
 | Tool | Purpose |
 | --- | --- |
 | `goal_loop_catalog` | Models the installed hosts actually offer |
-| `goal_loop_start` | Start a run with a goal, context and configuration (keep its `requestId` for retries) |
+| `goal_loop_start` | Start a run with a goal, context and configuration (keep its `requestId` for retries). A large goal or context can be passed as a file path (`goalFile`, `contextFile`) |
 | `goal_loop_status` | Lifecycle, recorder coverage and timing metrics |
 | `goal_loop_evidence` | Add an attributed observation or correction; it reaches the next round (the receipt's `notice` says when the run is paused, resumed for it, or has no thinker left to read it) |
 | `goal_loop_read` | The document, sources, tracker notes or input packets |

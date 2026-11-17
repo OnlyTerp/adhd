@@ -123,6 +123,10 @@ test('structured repair adds only missing closers, and only into the tracker sha
   assert.deepEqual(repairStructured(stringified).feedback.nextDirections, ['go "there"']);
   assert.equal(repairStructured('{"markdown":"m","feedback":{"findings":[],"questions":[],"nextDirections":"not json"}'), null, 'an undecodable string stays invalid');
   assert.equal(repairStructured(ok.slice(0, -3)), null, 'a cut value is not completed');
+  // Every brace present, but nextDirections written as a JSON string: the decode alone is the repair.
+  const balanced = '{"markdown":"m","feedback":{"findings":[],"questions":[],"nextDirections":"[\\"a\\",\\"b\\"]"}}';
+  assert.deepEqual(repairStructured(balanced).feedback.nextDirections, ['a', 'b']);
+  assert.equal(repairStructured('{"markdown":"m","feedback":{"findings":[],"questions":[],"nextDirections":"plain"}}'), null, 'complete and nothing decoded: not accepted');
   assert.equal(repairStructured('{"markdown":"m","feedback":{"findings":[{"a":[1]}'), null, 'more than two closers missing');
   assert.equal(repairStructured('{"other":1'), null, 'wrong shape');
   assert.equal(repairStructured('{"markdown":"m"]'), null, 'mismatched closer');
@@ -145,7 +149,7 @@ test('router starts only the hosts a run needs and routes by model', async t => 
   const catalogRouter = new HostRouter({codexFactory: () => { throw new Error('ChatGPT is not open'); }, claudeFactory: o => new ClaudeHost({...o, exe: process.execPath, exeArgs: [fake]})});
   await catalogRouter.initialize();
   const c = catalogRouter.catalog();
-  assert.deepEqual(c.models.filter(m => m.backend === 'claude').map(m => m.id), ['claude-opus-5-5', 'claude-sonnet-5-5']); assert.match(c.unavailable.codex, /not open/);
+  assert.deepEqual(c.models.filter(m => m.backend === 'claude').map(m => m.id), ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5']); assert.match(c.unavailable.codex, /not open/);
   await catalogRouter.close();
   await assert.rejects(new HostRouter({codexFactory: () => { throw new Error('ChatGPT is not open'); }}).initialize({models: ['gpt-6-astra']}), /not open/);
 });
