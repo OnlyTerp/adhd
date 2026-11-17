@@ -233,3 +233,20 @@ test('a misnamed evidence field is rejected with the right field names', async t
   const s = setup(t);
   assert.throws(() => s.store.submitEvidence(s.id, {requestId: 'e1', expectedInputRevision: 0, evidence: 'x', provenance: 'p', sourceRevision: 'r', status: 'observed', observedAt: '2026-01-01T00:00:00Z'}), /Unknown evidence field evidence; evidence fields are text, provenance/);
 });
+
+test('after a repaired tracker reply the next turn restates the accepted note and ledger', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
+  s.publish(await s.turn(false, 0));
+  const first = await s.turn(true, 0), h = s.hosts.at(-1); first.done = true;
+  h.emit('notification', {method: 'item/completed', params: {threadId: first.p.threadId, turnId: first.id, item: {type: 'agentMessage', id: first.id, text: JSON.stringify({markdown: '## Repaired note', feedback: feedback(7)}), phase: 'final_answer'}}});
+  h.emit('notification', {method: 'turn/completed', params: {threadId: first.p.threadId, turn: {id: first.id, status: 'completed', structured: {rejections: 1, repaired: true}}}});
+  await s.until(() => s.store.pending(s.id).n === 0);
+  s.publish(await s.turn(false, 1)); const second = await s.turn(true, 1);
+  assert.equal(second.p.threadId, first.p.threadId, 'same primed thread');
+  assert.match(s.text(second), /reached the host damaged/); assert.match(s.text(second), /Repaired note/); assert.match(s.text(second), /direction 7/);
+  assert.doesNotMatch(s.text(second), /last accepted response in this thread/);
+  assert.deepEqual(s.audit('structured_rejected'), [{rejections: 1, repaired: true}]);
+  s.record(second); await s.until(() => s.store.pending(s.id).n === 0);
+  s.publish(await s.turn(false, 2)); const third = await s.turn(true, 2);
+  assert.doesNotMatch(s.text(third), /reached the host damaged/, 'only the turn after a repair restates it');
+});

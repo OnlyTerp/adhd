@@ -162,7 +162,12 @@ class ClaudeThread {
     // closing brackets, keep it and interrupt the blind rewrite the CLI has already asked for.
     if (m.type === 'user' && this.schema && !t.salvaged && typeof t.raw === 'string') {
       const rejected = (m.message?.content ?? []).some(c => c.type === 'tool_result' && c.is_error && /could not be parsed as JSON/.test(typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? '')));
-      if (rejected) { const value = repairStructured(t.raw); t.raw = undefined; if (value) { t.salvaged = JSON.stringify(value); this.repairs = (this.repairs ?? 0) + 1; this.interrupt(t.id); } }
+      if (rejected) {
+        const value = repairStructured(t.raw); t.rejections = (t.rejections ?? 0) + 1;
+        // Keep what the next repair rule would need: the size and the tail of a rejection we could not repair.
+        if (!value && (t.unrepaired ??= []).length < 2) t.unrepaired.push({bytes: t.raw.length, tail: t.raw.slice(-200)});
+        t.raw = undefined; if (value) { t.salvaged = JSON.stringify(value); this.repairs = (this.repairs ?? 0) + 1; this.interrupt(t.id); }
+      }
       return;
     }
     // With partial messages on, each completed content block arrives as its own
@@ -188,7 +193,9 @@ class ClaudeThread {
       } else { status = 'failed'; error = String(m.result || (Array.isArray(m.errors) && m.errors.join('; ')) || m.subtype || 'Claude turn failed'); }
       this.lastUsage = m.usage ? {inputTokens: m.usage.input_tokens, outputTokens: m.usage.output_tokens, cacheRead: m.usage.cache_read_input_tokens, cacheWrite: m.usage.cache_creation_input_tokens} : null;
       if (m.usage) this.notify(t.id, 'thread/tokenUsage/updated', {tokenUsage: {last: {inputTokens: (m.usage.input_tokens ?? 0) + (m.usage.cache_read_input_tokens ?? 0) + (m.usage.cache_creation_input_tokens ?? 0), cachedInputTokens: m.usage.cache_read_input_tokens ?? 0, cacheWriteInputTokens: m.usage.cache_creation_input_tokens ?? 0, outputTokens: m.usage.output_tokens ?? 0, reasoningOutputTokens: 0}}});
-      this.notify(t.id, 'turn/completed', {turn: {id: t.id, status, ...(error ? {error: {message: error}} : {})}});
+      // A repaired reply never entered the CLI's history: the runtime must restate it on the next turn.
+      const structured = t.rejections ? {structured: {rejections: t.rejections, repaired: Boolean(t.salvaged), ...(t.unrepaired ? {unrepaired: t.unrepaired} : {})}} : {};
+      this.notify(t.id, 'turn/completed', {turn: {id: t.id, status, ...(error ? {error: {message: error}} : {}), ...structured}});
     }
   }
   // A dead process fails only this thread's turn; the other threads keep running.

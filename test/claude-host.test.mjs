@@ -106,8 +106,11 @@ test('a tracker call rejected only for its missing closing brace is kept instead
   const cut = await run(tr.threadId, 'organize [cutjson]', trackerSchema);
   assert.equal(cut.done.status, 'completed');
   assert.equal(JSON.parse(cut.items.find(e => e.method === 'item/completed').params.item.text).markdown, '## Rewritten');
+  assert.deepEqual(r.done.structured, {rejections: 1, repaired: true}, 'a repair is reported so the runtime restates the reply');
+  assert.equal(cut.done.structured.repaired, false); assert.equal(cut.done.structured.unrepaired[0].bytes, 20);
   const after = await run(tr.threadId, 'organize [normal]', trackerSchema);
   assert.equal(after.done.status, 'completed', 'the thread keeps working after a repair');
+  assert.equal(after.done.structured, undefined, 'no rejection, no report');
 });
 
 test('structured repair adds only missing closers, and only into the tracker shape', () => {
