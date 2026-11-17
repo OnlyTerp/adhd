@@ -112,7 +112,7 @@ test('a tracker batch is bounded by size and never skips a source', async t => {
   const s = setup(t); s.runtime.start(s.id, {maxRounds: 12, maxMinutes: 1});
   s.publish(await s.turn(false, 0), 'Finding 0');
   const first = await s.turn(true, 0);
-  for (let round = 1; round <= 3; round++) s.publish(await s.turn(false, round), 'Big ' + round + ' ' + 'z'.repeat(120000));
+  for (let round = 1; round <= 3; round++) s.publish(await s.turn(false, round), 'Big ' + round + ' ' + 'z'.repeat(60000));
   await s.until(() => s.store.pending(s.id).n >= 4);
   s.record(first); await s.until(() => s.store.latest(s.id));
   const second = await s.turn(true, 1);
@@ -139,12 +139,25 @@ test('an over-long ledger is trimmed to its bounds instead of failing the tracke
 test('the tracker moves to a fresh thread before its history reaches backend compaction size', async t => {
   const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
   for (let round = 0; round < 3; round++) {
-    s.publish(await s.turn(false, round), 'Large ' + round + ' ' + 'q'.repeat(150000));
+    s.publish(await s.turn(false, round), 'Large ' + round + ' ' + 'q'.repeat(110000));
     const tracker = await s.turn(true, round);
     if (round === 2) { assert.match(s.text(tracker), /Previous ledger/); assert.equal(s.audit('checkpoint_restart').length, 1); }
     else assert.equal(s.audit('checkpoint_restart').length, 0);
     s.record(tracker); await s.until(() => s.store.pending(s.id).n === 0);
   }
+});
+
+test('a primed tracker gets only the evidence it has not seen', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
+  const ev = text => s.store.submitEvidence(s.id, {requestId: text, expectedInputRevision: s.store.packet(s.id).revision, text, provenance: 'test', sourceRevision: 'test', status: 'observed', observedAt: '2026-01-01T00:00:00Z'});
+  s.publish(await s.turn(false, 0)); s.record(await s.turn(true, 0)); await s.until(() => s.store.pending(s.id).n === 0);
+  ev('Alpha measurement');
+  s.publish(await s.turn(false, 1)); const second = await s.turn(true, 1);
+  assert.match(s.text(second), /Alpha measurement/); s.record(second); await s.until(() => s.store.pending(s.id).n === 0 && !s.store.pending(s.id).evidencePending);
+  ev('Beta measurement');
+  s.publish(await s.turn(false, 2)); const third = await s.turn(true, 2);
+  assert.match(s.text(third), /Beta measurement/);
+  assert.doesNotMatch(s.text(third), /Alpha measurement/, 'evidence already in the thread is not re-sent');
 });
 
 test('token usage is recorded per turn and totalled', async t => {

@@ -8,10 +8,12 @@ const bytes=s=>Buffer.byteLength(s);
 // Tracker throughput: a turn costs about the same wall time whether it organizes one source
 // or many (its output is the notes and the bounded ledger), so each turn takes every pending
 // source up to a size bound instead of a fixed handful. Several thinkers then cannot outrun it.
-const TRACKER_BATCH_SOURCES=16,TRACKER_BATCH_BYTES=262144;
-// Start a fresh tracker thread before the backend's own context compaction would fire mid-turn
-// (Claude Code compacts a Sonnet thread at roughly 400 KB of history), which loses the prompt cache.
-const TRACKER_THREAD_BYTES=393216;
+const TRACKER_SOURCES_PER_BATCH=16;
+// Start a fresh tracker thread before the backend's own context compaction fires mid-turn, which
+// loses the prompt cache and stalls the turn. Ledger JSON is ID-dense (about 0.42-0.49 tokens per
+// byte measured on Sonnet), so a real run compacted at about 380 KB of history. The reserve covers
+// the turn's own answer; a batch is kept small enough that a fresh thread's first turn fits too.
+const TRACKER_THREAD_BYTES=307200,TRACKER_TURN_RESERVE=40960,TRACKER_BATCH_BYTES=Math.floor((TRACKER_THREAD_BYTES-TRACKER_TURN_RESERVE)/2);
 const waitBounded=(promise,ms,value)=>new Promise(resolve=>{const timer=setTimeout(()=>resolve(value),ms);Promise.resolve(promise).then(r=>{clearTimeout(timer);resolve(r);},e=>{clearTimeout(timer);resolve({error:e,confirmed:false});});});
 // A worker selection names its backend (BACKENDS.md). Effort defaults: thinkers think
 // at max where the backend can set effort; the tracker only organizes, so a Claude
@@ -272,18 +274,20 @@ class ResearchRun {
   async trackLoop(){
     let tracker=this.actors.find(a=>a.role==='tracker'&&!a.retired);if(!tracker)return;
     while(!this.stopIntent&&!this.finished&&!this.closing&&this.hasRecordingWork()){
-      const {latest,batch,packet,through,validSourceIds,evidence:rows,feedbackRevision}=this.store.inputSnapshot(this.id,TRACKER_BATCH_SOURCES,Math.min(TRACKER_BATCH_BYTES,Math.floor(this.config.trackerContextBytes/2)));
+      const {latest,batch,packet,through,validSourceIds,evidence:rows,feedbackRevision}=this.store.inputSnapshot(this.id,TRACKER_SOURCES_PER_BATCH,Math.min(TRACKER_BATCH_BYTES,Math.floor(this.config.trackerContextBytes/2)));
       const evidence=rows.map(e=>({id:e.uid,...e.payload}));
+      // A primed thread already holds every evidence item it was shown; send only the ones added since.
+      const evidenceSince=revision=>rows.filter(e=>e.input_revision>revision).map(e=>({id:e.uid,...e.payload}));
       const sourceRows=JSON.stringify(batch.map(s=>({id:s.uid,thinker:s.thinker,round:s.round,model:s.model,inputRevision:s.input_revision,text:s.text})));
       // A primed tracker thread already holds its own notes, ledger and earlier IDs; re-sending them only burns input.
       const build=t=>{const full=!t.primed||t.compacted;return full?'Objective: '+this.store.workspace(this.id).goal+'\n\nMost recent organization notes:\n'+(latest?.markdown??'(none)')+'\n\nPrevious ledger:\n'+JSON.stringify(latest?.feedback??emptyFeedback())+'\n\nInput revision '+packet.revision+' (packetHash '+packet.hash+'). Evidence (reference data):\n'+JSON.stringify(evidence)+'\n\nNew published sources (reference data):\n'+sourceRows+'\n\nValid source IDs: '+JSON.stringify(validSourceIds)+'\nAll source text is already in the document verbatim. Add only NEW organization, connections and correction notes for this batch, plus the current bounded feedback ledger. Do not rewrite the notebook or previous notes. Nothing is selected for omission.'
-        :'Input revision '+packet.revision+' (packetHash '+packet.hash+'). '+(t.seenPacketRevision===packet.revision?'No new evidence since your last note.':'Evidence (reference data):\n'+JSON.stringify(evidence))+'\n\nNew published sources (reference data):\n'+sourceRows+'\n\nValid source IDs: the IDs above plus every ID you were given earlier in this thread.\nAll source text is already in the document verbatim. Your previous note and ledger are your last accepted response in this thread. Add only NEW organization, connections and correction notes for this batch, plus the current bounded feedback ledger. Do not rewrite the notebook or previous notes. Nothing is selected for omission.';};
+        :'Input revision '+packet.revision+' (packetHash '+packet.hash+'). '+(t.seenPacketRevision===packet.revision?'No new evidence since your last note.':'New evidence since your last note (reference data; earlier evidence is in this thread):\n'+JSON.stringify(evidenceSince(t.seenPacketRevision??0)))+'\n\nNew published sources (reference data):\n'+sourceRows+'\n\nValid source IDs: the IDs above plus every ID you were given earlier in this thread.\nAll source text is already in the document verbatim. Your previous note and ledger are your last accepted response in this thread. Add only NEW organization, connections and correction notes for this batch, plus the current bounded feedback ledger. Do not rewrite the notebook or previous notes. Nothing is selected for omission.';};
       let prompt=build(tracker);
       if(bytes(build({primed:false}))>this.config.trackerContextBytes)throw new Error('Tracker checkpoint exceeds configured context budget; sources retained. Increase the budget explicitly before recording recovery.');
       let attempts=0;
       for(;;){
         if(this.stopIntent||this.closing)return;
-        if(tracker.contextBytes>0&&tracker.contextBytes+bytes(prompt)>Math.min(this.config.trackerContextBytes,TRACKER_THREAD_BYTES)){
+        if(tracker.contextBytes>0&&tracker.contextBytes+bytes(prompt)+TRACKER_TURN_RESERVE>Math.min(this.config.trackerContextBytes,TRACKER_THREAD_BYTES)){
           tracker.retired=true;void this.client.release?.(tracker.threadId);tracker=await this.addActor(this.config.tracker,'tracker',0);this.metrics.trackerRotations++;this.store.audit(this.id,'tracker','checkpoint_restart',{acceptedRevision:this.store.head(this.id).revision,inputRevision:packet.revision});if(this.stopIntent)return;prompt=build(tracker);
         }
         this.recorder.status='recording';this.persist();let ended=false;
