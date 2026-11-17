@@ -142,6 +142,14 @@ command in their app's MCP settings) and restart the app.
      thinker. Read the evidence receipt's `notice`: it says when the run is paused,
      when it resumed to check your evidence, or when no thinker is left to read it
      (start a new run if it matters).
+   - **Idle thinkers.** A thinker with nothing to add until new input arrives marks
+     `loop:idle`. ADHD also infers idle after three short rounds in a row with no new
+     input. An idle thinker takes no turns, and so spends no tokens, until new evidence
+     arrives or the tracker records another thinker's new work. Status shows it as
+     `idle`, and `run.allIdle` is true when every open thinker is idle. Then only your
+     evidence restarts the run, and a bounded run that reaches its time limit this way
+     ends with reason `all_idle`. If `allIdle` shows with time left, read
+     `feedback.questions` and send what they are waiting for, or stop the run.
 6. **Check in** with `goal_loop_status` (compact) or `goal_loop_read`
    (`synthesis` for the document and tracker feedback). Report findings to the user
    in your own words with the source round IDs.

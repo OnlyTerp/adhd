@@ -360,3 +360,39 @@ test('a tracker ledger item with a missing or single-string reference list is no
   const revision=await s.until(()=>s.store.latest(s.id));
   assert.deepEqual(revision.feedback.findings.map(f=>[f.sourceIds,f.evidenceIds]),[[[],[]],[[own],[]]]);
 });
+
+// Idle gate (2026-11-17): a thinker with nothing to add waits for input it has not seen instead of re-reading its history.
+const twoThinkers={...cfg,maxRounds:10,thinkers:[{modelId:'gpt-6-astra',speedId:'priority',reasoning:'max'},{modelId:'gpt-6-astra',speedId:'priority',reasoning:'max'}]};
+const thinkerTurns=s=>s.hosts[0].turns.filter(x=>!x.tracker);
+const recordAll=async s=>{for(let n=0;n<400&&s.runtime.status(s.id).run.recorder.pendingSources>0;n++){const open=s.hosts[0].turns.find(x=>x.tracker&&!x.done);if(open)s.record(s.hosts[0],open);await tick();}assert.equal(s.runtime.status(s.id).run.recorder.pendingSources,0);};
+const audits=(s,type)=>s.store.db.prepare("SELECT data FROM audit WHERE session_id=? AND type=?").all(s.id,type).map(r=>JSON.parse(r.data));
+test('an idle thinker takes no turn until evidence arrives',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:10});s.publish(s.hosts[0],await s.turn(false));s.publish(s.hosts[0],await s.turn(false,1),'idle','Waiting for the measurement.');
+  for(let n=0;n<30;n++)await tick();assert.equal(thinkerTurns(s).length,2);
+  const status=s.runtime.status(s.id);assert.match(JSON.stringify(status.run.thinkers),/"status":"idle"/);assert.equal(status.run.allIdle,true);assert.equal(audits(s,'all_idle').length,1);
+  s.runtime.evidence(s.id,observation());const third=await s.turn(false,2);assert.match(text(third),/Measured Unicode/);assert.equal(s.runtime.status(s.id).run.allIdle,false);await s.runtime.control(s.id,'stop');
+});
+test('recording idle rounds does not wake idle thinkers',async t=>{
+  const s=setup(t);s.runtime.start(s.id,twoThinkers);s.publish(s.hosts[0],await s.turn(false));s.publish(s.hosts[0],await s.turn(false,1));
+  s.publish(s.hosts[0],await s.turn(false,2),'idle','Waiting for reviews.');s.publish(s.hosts[0],await s.turn(false,3),'idle','Waiting for reviews.');
+  await recordAll(s);for(let n=0;n<30;n++)await tick();
+  assert.equal(thinkerTurns(s).length,4);assert.equal(s.runtime.status(s.id).run.allIdle,true);await s.runtime.control(s.id,'stop');
+});
+test('another thinker\'s new work wakes an idle thinker once the tracker has recorded it',async t=>{
+  const s=setup(t);s.runtime.start(s.id,twoThinkers);s.publish(s.hosts[0],await s.turn(false));s.publish(s.hosts[0],await s.turn(false,1));
+  const r2=[await s.turn(false,2),await s.turn(false,3)],idleThread=r2[0].p.threadId;s.publish(s.hosts[0],r2[0],'idle','Waiting for the review.');await s.until(()=>s.store.sources(s.id).length===3);s.publish(s.hosts[0],r2[1],'continue','Review of the draft.');
+  await s.turn(false,4);for(let n=0;n<30;n++)await tick();
+  assert.equal(thinkerTurns(s).filter(x=>x.p.threadId===idleThread).length,2,'not woken before the work is recorded');
+  await recordAll(s);const woken=await s.until(()=>thinkerTurns(s).filter(x=>x.p.threadId===idleThread)[2]);assert.match(text(woken),/Latest committed evidence and tracker feedback/);await s.runtime.control(s.id,'stop');
+});
+test('three short rounds with no new input count as idle; a long one resets the count',async t=>{
+  const s=setup(t),long='Derivation step. '.repeat(60);s.runtime.start(s.id,{...cfg,maxRounds:10});
+  s.publish(s.hosts[0],await s.turn(false),'continue',long);s.publish(s.hosts[0],await s.turn(false,1),'continue','Nothing new.');s.publish(s.hosts[0],await s.turn(false,2),'continue',long);
+  s.publish(s.hosts[0],await s.turn(false,3),'continue','Nothing new.');s.publish(s.hosts[0],await s.turn(false,4),'continue','Still nothing new.');s.publish(s.hosts[0],await s.turn(false,5),'continue','No change.');
+  for(let n=0;n<30;n++)await tick();assert.equal(thinkerTurns(s).length,6);assert.deepEqual(audits(s,'idle_inferred').map(a=>a.round),[6]);
+  assert.match(text(thinkerTurns(s)[1]),/use loop:idle/);await s.runtime.control(s.id,'stop');
+});
+test('idle on the last allowed round ends the thinker without waiting',async t=>{
+  const s=setup(t);s.runtime.start(s.id,{...cfg,maxRounds:2});s.publish(s.hosts[0],await s.turn(false));s.publish(s.hosts[0],await s.turn(false,1),'idle');
+  await recordAll(s);await s.runtime.runs.get(s.id).task;assert.equal(s.runtime.status(s.id).run.outcome,'limited');
+});

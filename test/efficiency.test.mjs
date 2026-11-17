@@ -99,7 +99,8 @@ test('one tracker turn organizes every source that arrived while it was busy', a
   const s = setup(t); s.runtime.start(s.id, {maxRounds: 12, maxMinutes: 1});
   s.publish(await s.turn(false, 0), 'Finding 0');
   const first = await s.turn(true, 0);
-  for (let round = 1; round <= 6; round++) s.publish(await s.turn(false, round), 'Finding ' + round);
+  // Real rounds are substantive; tiny repeated rounds with no new input would be held as idle.
+  for (let round = 1; round <= 6; round++) s.publish(await s.turn(false, round), 'Finding ' + round + '. ' + 'Supporting derivation. '.repeat(30));
   await s.until(() => s.store.pending(s.id).n >= 7);
   s.record(first); await s.until(() => s.store.latest(s.id));
   const second = await s.turn(true, 1);
