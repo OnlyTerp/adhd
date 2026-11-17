@@ -2,9 +2,16 @@ import {HostRouter,backendOf} from './router.mjs';
 import {randomUUID} from 'node:crypto';
 import {processIdentity} from './identity.mjs';
 import {digest} from './store.mjs';
-import {thinkerInstructions,trackerInstructions,trackerSchema,emptyFeedback} from './feedback.mjs';
+import {thinkerInstructions,trackerInstructions,trackerSchema,emptyFeedback,clampFeedback} from './feedback.mjs';
 
 const bytes=s=>Buffer.byteLength(s);
+// Tracker throughput: a turn costs about the same wall time whether it organizes one source
+// or many (its output is the notes and the bounded ledger), so each turn takes every pending
+// source up to a size bound instead of a fixed handful. Several thinkers then cannot outrun it.
+const TRACKER_BATCH_SOURCES=16,TRACKER_BATCH_BYTES=262144;
+// Start a fresh tracker thread before the backend's own context compaction would fire mid-turn
+// (Claude Code compacts a Sonnet thread at roughly 400 KB of history), which loses the prompt cache.
+const TRACKER_THREAD_BYTES=393216;
 const waitBounded=(promise,ms,value)=>new Promise(resolve=>{const timer=setTimeout(()=>resolve(value),ms);Promise.resolve(promise).then(r=>{clearTimeout(timer);resolve(r);},e=>{clearTimeout(timer);resolve({error:e,confirmed:false});});});
 // A worker selection names its backend (BACKENDS.md). Effort defaults: thinkers think
 // at max where the backend can set effort; the tracker only organizes, so a Claude
@@ -265,7 +272,7 @@ class ResearchRun {
   async trackLoop(){
     let tracker=this.actors.find(a=>a.role==='tracker'&&!a.retired);if(!tracker)return;
     while(!this.stopIntent&&!this.finished&&!this.closing&&this.hasRecordingWork()){
-      const {latest,batch,packet,through,validSourceIds,evidence:rows,feedbackRevision}=this.store.inputSnapshot(this.id,4);
+      const {latest,batch,packet,through,validSourceIds,evidence:rows,feedbackRevision}=this.store.inputSnapshot(this.id,TRACKER_BATCH_SOURCES,Math.min(TRACKER_BATCH_BYTES,Math.floor(this.config.trackerContextBytes/2)));
       const evidence=rows.map(e=>({id:e.uid,...e.payload}));
       const sourceRows=JSON.stringify(batch.map(s=>({id:s.uid,thinker:s.thinker,round:s.round,model:s.model,inputRevision:s.input_revision,text:s.text})));
       // A primed tracker thread already holds its own notes, ledger and earlier IDs; re-sending them only burns input.
@@ -276,13 +283,13 @@ class ResearchRun {
       let attempts=0;
       for(;;){
         if(this.stopIntent||this.closing)return;
-        if(tracker.contextBytes+bytes(prompt)>this.config.trackerContextBytes){
+        if(tracker.contextBytes>0&&tracker.contextBytes+bytes(prompt)>Math.min(this.config.trackerContextBytes,TRACKER_THREAD_BYTES)){
           tracker.retired=true;void this.client.release?.(tracker.threadId);tracker=await this.addActor(this.config.tracker,'tracker',0);this.metrics.trackerRotations++;this.store.audit(this.id,'tracker','checkpoint_restart',{acceptedRevision:this.store.head(this.id).revision,inputRevision:packet.revision});if(this.stopIntent)return;prompt=build(tracker);
         }
         this.recorder.status='recording';this.persist();let ended=false;
         try{
           const result=await this.turn(tracker,prompt+(attempts?'\nThe previous completed response was invalid. Repair the schema/citations; return valid JSON only. Error: '+this.recorder.error:''),trackerSchema,{inputRevision:packet.revision,inputHash:packet.hash,feedbackRevision,feedbackHash:digest(latest?.feedback??emptyFeedback()),sourceIds:batch.map(s=>s.uid)});
-          ended=true;const parsed=JSON.parse(result.text);if(!parsed.feedback)throw new Error('Missing feedback ledger');this.store.record(this.id,through,parsed.markdown,parsed.feedback,packet.revision,{exportNow:false});tracker.primed=true;tracker.compacted=false;tracker.seenPacketRevision=packet.revision;this.scheduleExport();
+          ended=true;const parsed=JSON.parse(result.text);if(!parsed.feedback)throw new Error('Missing feedback ledger');const {feedback:ledger,clamped}=clampFeedback(parsed.feedback);if(clamped)this.store.audit(this.id,'tracker','ledger_clamped',clamped);this.store.record(this.id,through,parsed.markdown,ledger,packet.revision,{exportNow:false});tracker.primed=true;tracker.compacted=false;tracker.seenPacketRevision=packet.revision;this.scheduleExport();
           this.recorder={...this.recorder,status:'current',error:null,uncertain:false};this.persist();this.wake();break;
         }catch(e){
           if(this.expected(e))return;

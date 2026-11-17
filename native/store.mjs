@@ -47,11 +47,15 @@ export class Store {
   packet(id){this.workspace(id);let p=this.db.prepare('SELECT * FROM packets WHERE session_id=? ORDER BY revision DESC LIMIT 1').get(id);if(!p){this.makePacket(id);p=this.db.prepare('SELECT * FROM packets WHERE session_id=? ORDER BY revision DESC LIMIT 1').get(id);}return {...p,data:JSON.parse(p.data)};}
   makePacket(id){const w=this.workspace(id),revision=(this.db.prepare('SELECT max(revision) n FROM packets WHERE session_id=?').get(id).n??0)+1;const data={objectiveHash:digest(w.goal),contextHash:digest(w.context),evidence:this.evidence(id).map(e=>({id:e.uid,hash:e.hash,status:e.payload.status,supersedes:e.payload.supersedes??null}))};this.db.prepare('INSERT INTO packets VALUES(?,?,?,?,?)').run(id,revision,JSON.stringify(data),digest(data),iso());return revision;}
   evidence(id){return this.db.prepare('SELECT * FROM evidence WHERE session_id=? ORDER BY sequence').all(id).map(e=>({...e,payload:JSON.parse(e.payload)}));}
-  inputSnapshot(id,batchLimit=0){
+  // batchBytes bounds a tracker batch by source text size; the first pending source is always included.
+  inputSnapshot(id,batchLimit=0,batchBytes=Infinity){
     this.packet(id); // Complete any legacy packet initialization before the read transaction.
     return this.transaction(()=>{
       const packet=this.packet(id),latest=this.latest(id),feedbackRevision=this.head(id).revision,evidence=this.evidence(id);
-      const batch=batchLimit?this.sources(id,latest?.through_source??0,batchLimit):[],through=batch.at(-1)?.sequence??latest?.through_source??0;
+      const batch=batchLimit?this.sources(id,latest?.through_source??0,batchLimit):[];
+      // Keep a contiguous prefix so the recorded `through` never skips a source.
+      for(let i=0,total=0;i<batch.length;i++){total+=Buffer.byteLength(batch[i].text);if(i>0&&total>batchBytes){batch.length=i;break;}}
+      const through=batch.at(-1)?.sequence??latest?.through_source??0;
       const validSourceIds=batchLimit?this.db.prepare('SELECT uid FROM sources WHERE session_id=? AND sequence<=?').all(id,through).map(s=>s.uid):[];
       return {packet,evidence,latest,feedbackRevision,batch,through,validSourceIds};
     },true);

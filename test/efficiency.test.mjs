@@ -95,6 +95,58 @@ test('a rejected tracker answer is repaired with full context', async t => {
   const repair = await s.turn(true, 2); assert.match(s.text(repair), /Previous ledger/);
 });
 
+test('one tracker turn organizes every source that arrived while it was busy', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 12, maxMinutes: 1});
+  s.publish(await s.turn(false, 0), 'Finding 0');
+  const first = await s.turn(true, 0);
+  for (let round = 1; round <= 6; round++) s.publish(await s.turn(false, round), 'Finding ' + round);
+  await s.until(() => s.store.pending(s.id).n >= 7);
+  s.record(first); await s.until(() => s.store.latest(s.id));
+  const second = await s.turn(true, 1);
+  for (let round = 1; round <= 6; round++) assert.match(s.text(second), new RegExp('Finding ' + round + '\\b'));
+  s.record(second);
+  await s.until(() => s.store.pending(s.id).n === 0);
+});
+
+test('a tracker batch is bounded by size and never skips a source', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 12, maxMinutes: 1});
+  s.publish(await s.turn(false, 0), 'Finding 0');
+  const first = await s.turn(true, 0);
+  for (let round = 1; round <= 3; round++) s.publish(await s.turn(false, round), 'Big ' + round + ' ' + 'z'.repeat(120000));
+  await s.until(() => s.store.pending(s.id).n >= 4);
+  s.record(first); await s.until(() => s.store.latest(s.id));
+  const second = await s.turn(true, 1);
+  assert.match(s.text(second), /Big 1 /); assert.match(s.text(second), /Big 2 /); assert.doesNotMatch(s.text(second), /Big 3 /);
+  s.record(second);
+  const third = await s.turn(true, 2);
+  assert.match(s.text(third), /Big 3 /);
+});
+
+test('an over-long ledger is trimmed to its bounds instead of failing the tracker turn', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 3, maxMinutes: 1});
+  s.publish(await s.turn(false, 0));
+  const findings = Array.from({length: 30}, (_, i) => ({id: 'F' + i, kind: 'new', summary: 'w'.repeat(1900), sourceIds: [], evidenceIds: []}));
+  s.record(await s.turn(true, 0), {findings, questions: [], nextDirections: ['keep going']});
+  const latest = await s.until(() => s.store.latest(s.id));
+  assert.ok(latest.feedback.findings.length <= 24);
+  assert.ok(Buffer.byteLength(JSON.stringify(latest.feedback)) <= 32000);
+  assert.equal(latest.feedback.findings[0].id, 'F0', 'the tracker\'s first priorities are kept');
+  assert.deepEqual(latest.feedback.nextDirections, ['keep going']);
+  assert.equal(s.audit('ledger_clamped').length, 1);
+  assert.equal(s.audit('attempt_failed').length, 0);
+});
+
+test('the tracker moves to a fresh thread before its history reaches backend compaction size', async t => {
+  const s = setup(t); s.runtime.start(s.id, {maxRounds: 6, maxMinutes: 1});
+  for (let round = 0; round < 3; round++) {
+    s.publish(await s.turn(false, round), 'Large ' + round + ' ' + 'q'.repeat(150000));
+    const tracker = await s.turn(true, round);
+    if (round === 2) { assert.match(s.text(tracker), /Previous ledger/); assert.equal(s.audit('checkpoint_restart').length, 1); }
+    else assert.equal(s.audit('checkpoint_restart').length, 0);
+    s.record(tracker); await s.until(() => s.store.pending(s.id).n === 0);
+  }
+});
+
 test('token usage is recorded per turn and totalled', async t => {
   const s = setup(t); s.runtime.start(s.id, {maxRounds: 2, maxMinutes: 1});
   s.publish(await s.turn(false, 0), 'Round one', {inputTokens: 1000, cachedInputTokens: 900, outputTokens: 50, reasoningOutputTokens: 30, totalTokens: 1050});
